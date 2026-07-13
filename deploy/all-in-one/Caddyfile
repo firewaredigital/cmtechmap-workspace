@@ -1,0 +1,27 @@
+:8088 {
+  encode gzip
+
+  @backend path /api/* /metrics /docs /openapi.json /redoc /ws/*
+  handle @backend {
+    reverse_proxy cm-techmap-all-in-one:8000
+  }
+
+  @keycloak path /auth/* /realms/* /resources/*
+  handle @keycloak {
+    reverse_proxy cm-techmap-all-in-one:8080
+  }
+
+  @minio path /minio/*
+  handle @minio {
+    reverse_proxy cm-techmap-all-in-one:9000
+  }
+
+  @minio_console path /minio-console/*
+  handle @minio_console {
+    reverse_proxy cm-techmap-all-in-one:9001
+  }
+
+  handle {
+    respond "cm-techmap gateway online" 200
+  }
+}

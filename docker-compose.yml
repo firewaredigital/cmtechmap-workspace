@@ -1,0 +1,515 @@
+# ==============================================================================
+# CM TECHMAP — Docker Compose Orchestration
+# Full-stack development environment for the Smart Cities platform
+# ==============================================================================
+# Usage:
+#   cp .env.example .env          # Configure environment
+#   docker compose up -d          # Start all services
+#   docker compose logs -f backend   # Watch backend logs
+#   docker compose down -v        # Stop and remove volumes
+# ==============================================================================
+
+name: cm-techmap
+
+services:
+  # ────────────────────────────────────────────────────────────────────────────
+  # PostgreSQL + PostGIS — Geospatial Database
+  # ────────────────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgis/postgis:16-3.5
+    container_name: cm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cm_techmap}
+      POSTGRES_USER: ${POSTGRES_USER:-cm_techmap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cm_techmap_dev_2026}
+      # Create a separate database for Keycloak
+      POSTGRES_MULTIPLE_DATABASES: ${KC_POSTGRES_DB:-keycloak}
+    ports:
+      - "15432:5432"  # External: 15432 → avoids all conflicts
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-scripts:/docker-entrypoint-initdb.d:ro
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cm_techmap} -d ${POSTGRES_DB:-cm_techmap}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Redis — Message Broker & Cache
+  # ────────────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: cm-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+        --appendonly yes
+        --maxmemory 512mb
+        --maxmemory-policy allkeys-lru
+        --save 60 1000
+    ports:
+      - "16379:6379"  # External: 16379 → avoids all conflicts
+    volumes:
+      - redis_data:/data
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # MinIO — S3-Compatible Object Storage (Self-Hosted)
+  # ────────────────────────────────────────────────────────────────────────────
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: cm-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cm_techmap_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-cm_techmap_minio_2026}
+    command: server /data --console-address ":9001"
+    ports:
+      - "19000:9000"  # S3 API — external: 19000
+      - "19001:9001"  # Web Console — external: 19001
+    volumes:
+      - minio_data:/data
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # MinIO Setup — Init Container (creates buckets, then exits)
+  # ────────────────────────────────────────────────────────────────────────────
+  minio-setup:
+    image: quay.io/minio/mc:latest
+    container_name: cm-minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cm_techmap_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-cm_techmap_minio_2026}
+    volumes:
+      - ./docker/minio/init-buckets.sh:/init-buckets.sh:ro
+    entrypoint: ["/bin/sh", "/init-buckets.sh"]
+    networks:
+      - cm-network
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Keycloak — Identity & Access Management
+  # ────────────────────────────────────────────────────────────────────────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    container_name: cm-keycloak
+    restart: unless-stopped
+    environment:
+      # Admin credentials
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-cmadmin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-CmAdmin@2026}
+      # Database
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${KC_POSTGRES_DB:-keycloak}
+      KC_DB_USERNAME: ${POSTGRES_USER:-cm_techmap}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-cm_techmap_dev_2026}
+      # Hostname
+      KC_HOSTNAME: http://localhost:18080
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_PROXY_HEADERS: xforwarded
+      # Health
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+    command: start-dev --import-realm
+    ports:
+      - "18080:8080"  # External: 18080 → avoids all conflicts
+    volumes:
+      - ./docker/keycloak:/opt/keycloak/data/import:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\n\r\n' >&3 && timeout 5 cat <&3 | grep -q 'UP'"]
+      interval: 30s
+      timeout: 15s
+      retries: 15
+      start_period: 120s
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Backend — FastAPI Application Server
+  # ────────────────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./cm-techmap-backend
+      dockerfile: Dockerfile
+    container_name: cm-backend
+    restart: unless-stopped
+    command: >
+      uvicorn app.main:app
+        --host 0.0.0.0
+        --port 8000
+        --reload
+        --log-level ${API_LOG_LEVEL:-info}
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - APP_DEBUG=${APP_DEBUG:-true}
+      - APP_SECRET_KEY=${APP_SECRET_KEY:-CHANGE-ME-to-a-random-64-character-string-in-production}
+      - APP_CORS_ORIGINS=${APP_CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cm_techmap}:${POSTGRES_PASSWORD:-cm_techmap_dev_2026}@postgres:5432/${POSTGRES_DB:-cm_techmap}
+      - DATABASE_URL_SYNC=postgresql+psycopg2://${POSTGRES_USER:-cm_techmap}:${POSTGRES_PASSWORD:-cm_techmap_dev_2026}@postgres:5432/${POSTGRES_DB:-cm_techmap}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-cm_techmap_admin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-cm_techmap_minio_2026}
+      - MINIO_USE_SSL=false
+      - KEYCLOAK_SERVER_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-cm-techmap}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-cm-techmap-api}
+      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET:-CHANGE-ME-after-keycloak-setup}
+      - KEYCLOAK_ADMIN_USERNAME=${KEYCLOAK_ADMIN_USERNAME:-admin}
+      - KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-admin_dev_2026}
+      # Phase 2: Processing services
+      - NODEODM_HOST=nodeodm
+      - NODEODM_PORT=3000
+      - TITILER_URL=http://titiler:80
+      - TITILER_EXTERNAL_URL=http://localhost:18888
+      - MARTIN_URL=http://martin:3000
+      - MARTIN_EXTERNAL_URL=http://localhost:13001
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./cm-techmap-backend/app:/code/app:ro
+      - ./cm-techmap-backend/tests:/code/tests:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Celery Worker — Async Task Processing
+  # ────────────────────────────────────────────────────────────────────────────
+  celery-worker:
+    build:
+      context: ./cm-techmap-backend
+      dockerfile: Dockerfile
+    container_name: cm-celery-worker
+    restart: unless-stopped
+    command: >
+      celery -A app.celery_app worker
+        --loglevel=info
+        --concurrency=1
+        --queues=default,processing,reports
+        -n worker@%h
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cm_techmap}:${POSTGRES_PASSWORD:-cm_techmap_dev_2026}@postgres:5432/${POSTGRES_DB:-cm_techmap}
+      - DATABASE_URL_SYNC=postgresql+psycopg2://${POSTGRES_USER:-cm_techmap}:${POSTGRES_PASSWORD:-cm_techmap_dev_2026}@postgres:5432/${POSTGRES_DB:-cm_techmap}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-cm_techmap_admin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-cm_techmap_minio_2026}
+      - MINIO_USE_SSL=false
+      # Phase 2: Processing services
+      - NODEODM_HOST=nodeodm
+      - NODEODM_PORT=3000
+    volumes:
+      - ./cm-techmap-backend/app:/code/app:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - cm-network
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Flower — Celery Monitoring Dashboard
+  # ────────────────────────────────────────────────────────────────────────────
+  flower:
+    build:
+      context: ./cm-techmap-backend
+      dockerfile: Dockerfile
+    container_name: cm-flower
+    restart: unless-stopped
+    command: >
+      celery -A app.celery_app flower
+        --port=5555
+        --broker_api=redis://redis:6379/0
+        --basic-auth=${FLOWER_BASIC_AUTH:-admin:flower_dev_2026}
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    ports:
+      - "5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - cm-network
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Celery Beat — Scheduled Task Scheduler (singleton)
+  # ────────────────────────────────────────────────────────────────────────────
+  celery-beat:
+    build:
+      context: ./cm-techmap-backend
+      dockerfile: Dockerfile
+    container_name: cm-celery-beat
+    restart: unless-stopped
+    command: >
+      celery -A app.celery_app beat
+        --loglevel=info
+        --pidfile=/tmp/celerybeat.pid
+        --schedule=/tmp/celerybeat-schedule
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - cm-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # NodeODM — Photogrammetry Processing Engine (Phase 2)
+  # ────────────────────────────────────────────────────────────────────────────
+  nodeodm:
+    image: opendronemap/nodeodm:latest
+    container_name: cm-nodeodm
+    restart: unless-stopped
+    ports:
+      - "13000:3000"  # External: 13000 → avoids conflicts
+    volumes:
+      - nodeodm_data:/var/www/data
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+    shm_size: '512m'
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # TiTiler — Dynamic Raster Tile Server for COG (Phase 2)
+  # ────────────────────────────────────────────────────────────────────────────
+  titiler:
+    image: ghcr.io/developmentseed/titiler:latest
+    container_name: cm-titiler
+    restart: unless-stopped
+    environment:
+      # GDAL optimizations for COG serving
+      CPL_TMPDIR: /tmp
+      GDAL_CACHEMAX: "200"
+      GDAL_INGESTED_BYTES_AT_OPEN: "32768"
+      GDAL_DISABLE_READDIR_ON_OPEN: EMPTY_DIR
+      GDAL_HTTP_MERGE_CONSECUTIVE_RANGES: "YES"
+      GDAL_HTTP_MULTIPLEX: "YES"
+      VSI_CACHE: "TRUE"
+      VSI_CACHE_SIZE: "536870912"  # 512MB
+      PYTHONWARNINGS: ignore
+      TITILER_API_CORS_ORIGINS: "*"
+      # MinIO connectivity (for reading COGs from internal storage)
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-cm_techmap_admin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-cm_techmap_minio_2026}
+      AWS_S3_ENDPOINT: http://minio:9000
+      AWS_HTTPS: "NO"
+      AWS_VIRTUAL_HOSTING: "FALSE"
+    ports:
+      - "18888:80"    # TiTiler listens on port 80
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Martin — PostGIS Vector Tile Server (Phase 2)
+  # ────────────────────────────────────────────────────────────────────────────
+  martin:
+    image: ghcr.io/maplibre/martin:latest
+    container_name: cm-martin
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-cm_techmap}:${POSTGRES_PASSWORD:-cm_techmap_dev_2026}@postgres:5432/${POSTGRES_DB:-cm_techmap}
+    ports:
+      - "13001:3000"  # External: 13001
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/catalog"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Nginx — Reverse Proxy Gateway (Phase 4B)
+  # Unified entry point for all platform services
+  # ────────────────────────────────────────────────────────────────────────────
+  nginx:
+    build:
+      context: ./docker/nginx
+      dockerfile: Dockerfile
+    container_name: cm-nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-18081}:80"     # Main gateway
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:80/nginx-health", "-o", "/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Prometheus — Metrics Collection (Phase 4B)
+  # Scrapes /metrics from backend, nginx, keycloak
+  # ────────────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: cm-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Grafana — Monitoring Dashboards (Phase 4B)
+  # Pre-provisioned with Prometheus datasource and CM TECHMAP dashboard
+  # ────────────────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: cm-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-grafana_dev_2026}
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s:%(http_port)s/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cm-techmap.json
+    ports:
+      - "${GRAFANA_PORT:-3002}:3000"   # Grafana on 3002
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Networks
+# ──────────────────────────────────────────────────────────────────────────────
+networks:
+  cm-network:
+    driver: bridge
+    name: cm-techmap-network
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Persistent Volumes
+# ──────────────────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+    name: cm-postgres-data
+  redis_data:
+    driver: local
+    name: cm-redis-data
+  minio_data:
+    driver: local
+    name: cm-minio-data
+  nodeodm_data:
+    driver: local
+    name: cm-nodeodm-data
+  prometheus_data:
+    driver: local
+    name: cm-prometheus-data
+  grafana_data:
+    driver: local
+    name: cm-grafana-data

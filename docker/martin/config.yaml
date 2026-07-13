@@ -1,0 +1,15 @@
+# ==============================================================================
+# Martin Tile Server Configuration
+# Auto-discovers PostGIS tables with geometry columns as vector tile sources
+# ==============================================================================
+
+# Connection settings (uses env var DATABASE_URL)
+postgres:
+  connection_string: ${DATABASE_URL}
+
+# Explicitly configure sources for tenant schemas
+# Martin auto-discovers public schema tables; tenant tables require
+# explicit config or function sources.
+
+# Function source for dynamic tenant table access
+# Example: SELECT * FROM public.fn_parcels(z, x, y, tenant_schema)

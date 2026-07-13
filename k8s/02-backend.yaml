@@ -1,0 +1,223 @@
+# ==============================================================================
+# CM TECHMAP — Backend API Deployment
+# FastAPI application serving the REST API
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-api
+  namespace: cm-techmap
+  labels:
+    app: backend-api
+    component: api
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: backend-api
+  template:
+    metadata:
+      labels:
+        app: backend-api
+        component: api
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: api
+          image: registry.cm-solucoes.com.br/cm-techmap/backend:latest
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: cm-techmap-config
+            - secretRef:
+                name: cm-techmap-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          startupProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-api
+  namespace: cm-techmap
+spec:
+  selector:
+    app: backend-api
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP
+
+---
+# ==============================================================================
+# CM TECHMAP — Celery Worker Deployment (Processing Queue)
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-worker-processing
+  namespace: cm-techmap
+  labels:
+    app: celery-worker
+    queue: processing
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: celery-worker
+      queue: processing
+  template:
+    metadata:
+      labels:
+        app: celery-worker
+        queue: processing
+    spec:
+      terminationGracePeriodSeconds: 300  # Allow long processing to finish
+      containers:
+        - name: worker
+          image: registry.cm-solucoes.com.br/cm-techmap/backend:latest
+          command: ["celery", "-A", "app.tasks.celery_app", "worker",
+                    "--queues=processing",
+                    "--concurrency=2",
+                    "--loglevel=info",
+                    "--max-tasks-per-child=10"]
+          envFrom:
+            - configMapRef:
+                name: cm-techmap-config
+            - secretRef:
+                name: cm-techmap-secrets
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "4000m"
+              memory: "8Gi"
+          volumeMounts:
+            - name: processing-temp
+              mountPath: /tmp/processing
+      volumes:
+        - name: processing-temp
+          emptyDir:
+            sizeLimit: 50Gi
+
+---
+# ==============================================================================
+# CM TECHMAP — Celery Worker Deployment (Reports Queue)
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-worker-reports
+  namespace: cm-techmap
+  labels:
+    app: celery-worker
+    queue: reports
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: celery-worker
+      queue: reports
+  template:
+    metadata:
+      labels:
+        app: celery-worker
+        queue: reports
+    spec:
+      containers:
+        - name: worker
+          image: registry.cm-solucoes.com.br/cm-techmap/backend:latest
+          command: ["celery", "-A", "app.tasks.celery_app", "worker",
+                    "--queues=reports",
+                    "--concurrency=3",
+                    "--loglevel=info"]
+          envFrom:
+            - configMapRef:
+                name: cm-techmap-config
+            - secretRef:
+                name: cm-techmap-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+
+---
+# ==============================================================================
+# CM TECHMAP — Celery Beat (Scheduler)
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-beat
+  namespace: cm-techmap
+  labels:
+    app: celery-beat
+spec:
+  replicas: 1  # MUST be 1 — only one beat scheduler
+  strategy:
+    type: Recreate  # Prevent duplicate schedulers
+  selector:
+    matchLabels:
+      app: celery-beat
+  template:
+    metadata:
+      labels:
+        app: celery-beat
+    spec:
+      containers:
+        - name: beat
+          image: registry.cm-solucoes.com.br/cm-techmap/backend:latest
+          command: ["celery", "-A", "app.tasks.celery_app", "beat",
+                    "--loglevel=info"]
+          envFrom:
+            - configMapRef:
+                name: cm-techmap-config
+            - secretRef:
+                name: cm-techmap-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

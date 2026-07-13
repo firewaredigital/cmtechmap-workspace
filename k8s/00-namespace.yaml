@@ -1,0 +1,11 @@
+# ==============================================================================
+# CM TECHMAP — Kubernetes Namespace
+# ==============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cm-techmap
+  labels:
+    app.kubernetes.io/name: cm-techmap
+    app.kubernetes.io/part-of: cm-techmap
+    environment: production

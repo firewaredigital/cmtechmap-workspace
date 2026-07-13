@@ -1,0 +1,77 @@
+services:
+  cm-techmap-all-in-one:
+    build:
+      context: ../../..
+      dockerfile: applications/deploy/all-in-one/Dockerfile
+    container_name: cm-techmap-all-in-one
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_CORS_ORIGINS: ${APP_CORS_ORIGINS:-https://your-vercel-domain.vercel.app}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-CHANGE-ME}
+      POSTGRES_DB: ${POSTGRES_DB:-cm_techmap}
+      POSTGRES_USER: ${POSTGRES_USER:-cm_techmap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cm_techmap_dev_2026}
+      KC_POSTGRES_DB: ${KC_POSTGRES_DB:-keycloak}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cm_techmap_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-cm_techmap_minio_2026}
+      KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin_dev_2026}
+      KEYCLOAK_EXTERNAL_URL: ${KEYCLOAK_EXTERNAL_URL:-http://localhost:8080}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-cm-techmap}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-cm-techmap-api}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-CHANGE-ME}
+      FLOWER_BASIC_AUTH: ${FLOWER_BASIC_AUTH:-admin:flower_dev_2026}
+      GROQ_ENABLED: ${GROQ_ENABLED:-false}
+      AI_PROVIDER: ${AI_PROVIDER:-hybrid}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    ports:
+      - "${HOST_BACKEND_PORT:-8000}:8000"
+      - "${HOST_KEYCLOAK_PORT:-8080}:8080"
+      - "${HOST_MINIO_API_PORT:-9000}:9000"
+      - "${HOST_MINIO_CONSOLE_PORT:-9001}:9001"
+      - "${HOST_FLOWER_PORT:-5555}:5555"
+    volumes:
+      - cmtechmap_postgres_data:/var/lib/postgresql/data
+      - cmtechmap_minio_data:/data/minio
+      - cmtechmap_runtime:/code/runtime
+
+  cm-techmap-gateway:
+    image: caddy:2-alpine
+    container_name: cm-techmap-gateway
+    restart: unless-stopped
+    depends_on:
+      - cm-techmap-all-in-one
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "${HOST_GATEWAY_PORT:-8088}:8088"
+    profiles:
+      - tunnel-quick
+      - tunnel-token
+
+  cm-techmap-cloudflared-quick:
+    image: cloudflare/cloudflared:latest
+    container_name: cm-techmap-cloudflared-quick
+    restart: unless-stopped
+    depends_on:
+      - cm-techmap-gateway
+    command: tunnel --no-autoupdate --url http://cm-techmap-gateway:8088
+    profiles:
+      - tunnel-quick
+
+  cm-techmap-cloudflared-token:
+    image: cloudflare/cloudflared:latest
+    container_name: cm-techmap-cloudflared-token
+    restart: unless-stopped
+    depends_on:
+      - cm-techmap-gateway
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    profiles:
+      - tunnel-token
+
+volumes:
+  cmtechmap_postgres_data:
+  cmtechmap_minio_data:
+  cmtechmap_runtime:

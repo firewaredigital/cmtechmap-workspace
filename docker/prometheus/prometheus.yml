@@ -1,0 +1,73 @@
+# ==============================================================================
+# CM TECHMAP — Prometheus Configuration
+# Scrape targets for the Smart Cities platform
+# ==============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+  external_labels:
+    platform: cm-techmap
+    environment: development
+
+# ==============================================================================
+# Alerting Rules
+# ==============================================================================
+rule_files:
+  - "/etc/prometheus/alert-rules.yml"
+
+# ==============================================================================
+# Scrape Configurations
+# ==============================================================================
+scrape_configs:
+
+  # ── Prometheus self-monitoring ──────────────────────────────────────────────
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: prometheus
+
+  # ── CM TECHMAP Backend (FastAPI) ────────────────────────────────────────────
+  - job_name: "cm-techmap-backend"
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["backend:8000"]
+        labels:
+          service: backend
+          component: api
+
+  # ── Nginx ───────────────────────────────────────────────────────────────────
+  - job_name: "nginx"
+    metrics_path: "/nginx-health"
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["nginx:80"]
+        labels:
+          service: nginx
+          component: gateway
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  # Note: Requires redis_exporter sidecar (optional future addition)
+  # - job_name: "redis"
+  #   static_configs:
+  #     - targets: ["redis-exporter:9121"]
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  # Note: Requires postgres_exporter sidecar (optional future addition)
+  # - job_name: "postgres"
+  #   static_configs:
+  #     - targets: ["postgres-exporter:9187"]
+
+  # ── Keycloak ────────────────────────────────────────────────────────────────
+  - job_name: "keycloak"
+    metrics_path: "/metrics"
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["keycloak:8080"]
+        labels:
+          service: keycloak
+          component: auth

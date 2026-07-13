@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CM TECHMAP — Relatório do Projeto</title>
+    <style>
+        /* ── Page Setup ───────────────────────────────────────────────── */
+        @page {
+            size: A4;
+            margin: 20mm 15mm 25mm 15mm;
+
+            @top-right {
+                content: "CM TECHMAP — Inteligência Urbana";
+                font-size: 7pt;
+                color: #8a8d93;
+                font-family: "Helvetica Neue", sans-serif;
+            }
+
+            @bottom-center {
+                content: "Página " counter(page) " de " counter(pages);
+                font-size: 7pt;
+                color: #8a8d93;
+                font-family: "Helvetica Neue", sans-serif;
+            }
+
+            @bottom-right {
+                content: "Confidencial — Uso Governamental";
+                font-size: 7pt;
+                color: #C9190B;
+                font-family: "Helvetica Neue", sans-serif;
+            }
+        }
+
+        @page :first {
+            margin-top: 0;
+            @top-right { content: none; }
+        }
+
+        /* ── Typography ───────────────────────────────────────────────── */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: "Helvetica Neue", "Arial", sans-serif;
+            font-size: 10pt;
+            line-height: 1.5;
+            color: #1a1d21;
+        }
+
+        h1 { font-size: 22pt; font-weight: 700; margin-bottom: 8pt; }
+        h2 { font-size: 14pt; font-weight: 700; margin-top: 16pt; margin-bottom: 8pt; color: #C9190B; }
+        h3 { font-size: 11pt; font-weight: 600; margin-top: 12pt; margin-bottom: 6pt; }
+
+        p { margin-bottom: 6pt; }
+
+        /* ── Cover Page ───────────────────────────────────────────────── */
+        .cover {
+            height: 297mm;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            page-break-after: always;
+            background: linear-gradient(180deg, #1a1d21 0%, #212427 50%, #2a2d31 100%);
+            color: #ffffff;
+            margin: -20mm -15mm;
+            padding: 40mm 30mm;
+        }
+
+        .cover-logo {
+            font-size: 36pt;
+            font-weight: 800;
+            letter-spacing: 3pt;
+            margin-bottom: 12pt;
+        }
+
+        .cover-logo .accent {
+            color: #C9190B;
+        }
+
+        .cover-subtitle {
+            font-size: 10pt;
+            letter-spacing: 5pt;
+            text-transform: uppercase;
+            color: #8a8d93;
+            margin-bottom: 40pt;
+        }
+
+        .cover-project {
+            font-size: 20pt;
+            font-weight: 600;
+            margin-bottom: 8pt;
+        }
+
+        .cover-city {
+            font-size: 12pt;
+            color: #d2d2d2;
+            margin-bottom: 30pt;
+        }
+
+        .cover-meta {
+            font-size: 9pt;
+            color: #8a8d93;
+            margin-top: 30pt;
+        }
+
+        .cover-meta span {
+            display: block;
+            margin-bottom: 4pt;
+        }
+
+        .cover-divider {
+            width: 60mm;
+            height: 2px;
+            background: #C9190B;
+            margin: 16pt auto;
+        }
+
+        /* ── Section ──────────────────────────────────────────────────── */
+        .section {
+            margin-bottom: 20pt;
+        }
+
+        .section-header {
+            background: #f0f0f0;
+            padding: 8pt 12pt;
+            border-left: 4px solid #C9190B;
+            margin-bottom: 12pt;
+        }
+
+        .section-header h2 {
+            margin: 0;
+            font-size: 13pt;
+        }
+
+        /* ── Metrics Grid ─────────────────────────────────────────────── */
+        .metrics-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8pt;
+            margin-bottom: 16pt;
+        }
+
+        .metric-card {
+            flex: 1 1 45%;
+            background: #f8f8f8;
+            border: 1px solid #e0e0e0;
+            border-radius: 4pt;
+            padding: 10pt 12pt;
+        }
+
+        .metric-label {
+            font-size: 8pt;
+            text-transform: uppercase;
+            letter-spacing: 1pt;
+            color: #6a6e73;
+            margin-bottom: 4pt;
+        }
+
+        .metric-value {
+            font-size: 18pt;
+            font-weight: 700;
+            color: #1a1d21;
+        }
+
+        .metric-unit {
+            font-size: 9pt;
+            color: #8a8d93;
+            margin-left: 2pt;
+        }
+
+        /* ── Tables ───────────────────────────────────────────────────── */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 12pt;
+            font-size: 9pt;
+        }
+
+        th {
+            background: #212427;
+            color: #ffffff;
+            padding: 6pt 8pt;
+            text-align: left;
+            font-weight: 600;
+            font-size: 8pt;
+            text-transform: uppercase;
+            letter-spacing: 0.5pt;
+        }
+
+        td {
+            padding: 5pt 8pt;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        tr:nth-child(even) td {
+            background: #f8f8f8;
+        }
+
+        /* ── Status Badges ────────────────────────────────────────────── */
+        .badge {
+            display: inline-block;
+            padding: 2pt 8pt;
+            border-radius: 10pt;
+            font-size: 8pt;
+            font-weight: 600;
+        }
+
+        .badge-completed { background: #e6f5e6; color: #1e7e34; }
+        .badge-processing { background: #e6f0ff; color: #0066cc; }
+        .badge-pending { background: #fff8e1; color: #856404; }
+        .badge-error { background: #fde8e8; color: #c9190b; }
+
+        /* ── Info Grid ────────────────────────────────────────────────── */
+        .info-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4pt 24pt;
+            margin-bottom: 12pt;
+        }
+
+        .info-item {
+            flex: 0 0 48%;
+            display: flex;
+            padding: 4pt 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .info-label {
+            font-weight: 600;
+            min-width: 40%;
+            color: #6a6e73;
+            font-size: 9pt;
+        }
+
+        .info-value {
+            font-size: 9pt;
+        }
+
+        /* ── Footer Note ──────────────────────────────────────────────── */
+        .footer-note {
+            margin-top: 30pt;
+            padding-top: 10pt;
+            border-top: 1px solid #e0e0e0;
+            font-size: 8pt;
+            color: #8a8d93;
+            text-align: center;
+        }
+
+        /* ── Page Break ───────────────────────────────────────────────── */
+        .page-break {
+            page-break-before: always;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- COVER PAGE                                                        -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div class="cover">
+        <div class="cover-logo">CM<span class="accent">TECHMAP</span></div>
+        <div class="cover-subtitle">Inteligência Urbana</div>
+
+        <div class="cover-divider"></div>
+
+        <div class="cover-project">{{ project.name }}</div>
+        <div class="cover-city">
+            {% if project.city %}{{ project.city }}{% endif %}
+            {% if project.state %} — {{ project.state }}{% endif %}
+        </div>
+
+        <div class="cover-meta">
+            <span>Relatório de Projeto — Análise Geoespacial</span>
+            <span>Gerado em {{ report_date }}</span>
+            {% if project.responsible %}
+            <span>Responsável: {{ project.responsible }}</span>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if ai_narrative and (ai_narrative.executive_summary or ai_narrative.fiscal_analysis or ai_narrative.qa_analysis or ai_narrative.recommendations) %}
+    <div class="section page-break">
+        <div class="section-header">
+            <h2>Análises Narrativas por IA</h2>
+        </div>
+
+        {% if ai_narrative.executive_summary %}
+        <h3>Sumário Executivo</h3>
+        <p>{{ ai_narrative.executive_summary }}</p>
+        {% endif %}
+
+        {% if ai_narrative.fiscal_analysis %}
+        <h3>Análise Fiscal</h3>
+        <p>{{ ai_narrative.fiscal_analysis }}</p>
+        {% endif %}
+
+        {% if ai_narrative.qa_analysis %}
+        <h3>Análise de Qualidade Técnica</h3>
+        <p>{{ ai_narrative.qa_analysis }}</p>
+        {% endif %}
+
+        {% if ai_narrative.recommendations %}
+        <h3>Recomendações Prioritárias</h3>
+        <p>{{ ai_narrative.recommendations }}</p>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- SUMMARY SECTION                                                   -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div class="section">
+        <div class="section-header">
+            <h2>1. Resumo Executivo</h2>
+        </div>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">Total de Voos</div>
+                <div class="metric-value">{{ total_flights }}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Imagens Capturadas</div>
+                <div class="metric-value">{{ total_images }}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Área Mapeada</div>
+                <div class="metric-value">
+                    {{ total_area_sqm | format_area }}
+                </div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Assets Gerados</div>
+                <div class="metric-value">{{ total_assets }}</div>
+            </div>
+        </div>
+
+        <h3>Informações do Projeto</h3>
+        <div class="info-grid">
+            <div class="info-item">
+                <span class="info-label">Código:</span>
+                <span class="info-value">{{ project.code or '—' }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Nome:</span>
+                <span class="info-value">{{ project.name }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Cidade:</span>
+                <span class="info-value">{{ project.city or '—' }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Estado:</span>
+                <span class="info-value">{{ project.state or '—' }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Status:</span>
+                <span class="info-value">
+                    <span class="badge badge-{{ project.status }}">{{ project.status }}</span>
+                </span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Responsável:</span>
+                <span class="info-value">{{ project.responsible or '—' }}</span>
+            </div>
+        </div>
+
+        {% if project.description %}
+        <h3>Descrição</h3>
+        <p>{{ project.description }}</p>
+        {% endif %}
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- FLIGHTS TABLE                                                     -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div class="section page-break">
+        <div class="section-header">
+            <h2>2. Registro de Voos</h2>
+        </div>
+
+        {% if flights %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Data</th>
+                    <th>Altitude (m)</th>
+                    <th>Overlap (%)</th>
+                    <th>Imagens</th>
+                    <th>GSD (cm)</th>
+                    <th>Área (m²)</th>
+                    <th>Câmera</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for flight in flights %}
+                <tr>
+                    <td>{{ flight.flight_date | format_date }}</td>
+                    <td>{{ flight.altitude_m or '—' }}</td>
+                    <td>{{ flight.overlap_pct or '—' }}</td>
+                    <td>{{ flight.images_count or 0 }}</td>
+                    <td>{{ flight.gsd_cm | format_number if flight.gsd_cm else '—' }}</td>
+                    <td>{{ flight.area_coverage_sqm | format_area if flight.area_coverage_sqm else '—' }}</td>
+                    <td>{{ flight.camera_model or '—' }}</td>
+                    <td><span class="badge badge-{{ flight.status }}">{{ flight.status }}</span></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p><em>Nenhum voo registrado para este projeto.</em></p>
+        {% endif %}
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- ASSETS TABLE                                                      -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div class="section">
+        <div class="section-header">
+            <h2>3. Assets Gerados</h2>
+        </div>
+
+        {% if assets %}
+        <h3>Ortomosaicos ({{ ortho_assets | length }})</h3>
+        {% if ortho_assets %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Arquivo</th>
+                    <th>Resolução (cm/px)</th>
+                    <th>Tamanho</th>
+                    <th>CRS (EPSG)</th>
+                    <th>COG</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for asset in ortho_assets %}
+                <tr>
+                    <td style="word-break: break-all;">{{ asset.file_key }}</td>
+                    <td>{{ asset.resolution_cm | format_number if asset.resolution_cm else '—' }}</td>
+                    <td>{{ asset.file_size_bytes | format_bytes }}</td>
+                    <td>{{ asset.crs_epsg or '—' }}</td>
+                    <td>{{ '✓' if asset.cog_validated else '—' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+
+        {% if dsm_assets %}
+        <h3>Modelos de Elevação ({{ dsm_assets | length }})</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Tipo</th>
+                    <th>Arquivo</th>
+                    <th>Resolução (cm/px)</th>
+                    <th>Tamanho</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for asset in dsm_assets %}
+                <tr>
+                    <td>{{ asset.asset_type | upper }}</td>
+                    <td style="word-break: break-all;">{{ asset.file_key }}</td>
+                    <td>{{ asset.resolution_cm | format_number if asset.resolution_cm else '—' }}</td>
+                    <td>{{ asset.file_size_bytes | format_bytes }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+
+        {% else %}
+        <p><em>Nenhum asset gerado para este projeto.</em></p>
+        {% endif %}
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- URBAN ANALYTICS (BUILDING EXTRACTION)                             -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    {% if include_buildings and urban_analytics and urban_analytics.total_buildings %}
+    <div class="section page-break">
+        <div class="section-header">
+            <h2>4. Análise Urbanística — Edificações Detectadas</h2>
+        </div>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">Edificações Detectadas</div>
+                <div class="metric-value">{{ urban_analytics.total_buildings }}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Área Construída</div>
+                <div class="metric-value">
+                    {{ urban_analytics.total_built_area_sqm | format_area }}
+                    <span class="metric-unit">({{ urban_analytics.built_area_pct }}%)</span>
+                </div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Área Verde / Permeável</div>
+                <div class="metric-value">
+                    {{ urban_analytics.green_area_pct }}<span class="metric-unit">%</span>
+                </div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Altura Média</div>
+                <div class="metric-value">
+                    {{ urban_analytics.avg_height_m }}<span class="metric-unit">m</span>
+                </div>
+            </div>
+        </div>
+
+        <h3>Distribuição por Altura</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Faixa de Altura</th>
+                    <th>Quantidade</th>
+                    <th>Percentual</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for range_name, count in urban_analytics.height_distribution.items() %}
+                <tr>
+                    <td>{{ range_name }}</td>
+                    <td>{{ count }}</td>
+                    <td>{{ (count / urban_analytics.total_buildings * 100) | round(1) }}%</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <h3>Distribuição por Área</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Faixa de Área</th>
+                    <th>Quantidade</th>
+                    <th>Percentual</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for range_name, count in urban_analytics.area_distribution.items() %}
+                <tr>
+                    <td>{{ range_name }}</td>
+                    <td>{{ count }}</td>
+                    <td>{{ (count / urban_analytics.total_buildings * 100) | round(1) }}%</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="info-grid" style="margin-top: 12pt;">
+            <div class="info-item">
+                <span class="info-label">Altura Máxima:</span>
+                <span class="info-value">{{ urban_analytics.max_height_m }} m</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Altura Mínima:</span>
+                <span class="info-value">{{ urban_analytics.min_height_m }} m</span>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- MANDATORY AI MEASUREMENT SECTIONS                                 -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    {% if mandatory_sections.property_appraisal.enabled %}
+    <div class="section page-break">
+        <div class="section-header">
+            <h2>Laudo por Imóvel</h2>
+        </div>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">Imóveis Quantificados</div>
+                <div class="metric-value">{{ mandatory_sections.property_appraisal.totals.total_properties }}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Área Construída Total</div>
+                <div class="metric-value">{{ mandatory_sections.property_appraisal.totals.total_built_area_sqm | format_area }}</div>
+            </div>
+        </div>
+
+        {% if mandatory_sections.property_appraisal.rows %}
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Área (m²)</th>
+                    <th>Perímetro (m)</th>
+                    <th>Altura (m)</th>
+                    <th>Pavimentos</th>
+                    <th>Tipo</th>
+                    <th>Confiança</th>
+                    <th>IPTU Estimado/ano</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in mandatory_sections.property_appraisal.rows[:120] %}
+                <tr>
+                    <td>{{ item.index }}</td>
+                    <td>{{ item.area_sqm | format_number }}</td>
+                    <td>{{ item.perimeter_m | format_number }}</td>
+                    <td>{{ item.height_m | format_number }}</td>
+                    <td>{{ item.floors_estimate }}</td>
+                    <td>{{ item.building_type }}</td>
+                    <td>{{ (item.confidence * 100) | round(1) }}%</td>
+                    <td>{{ item.estimated_iptu_annual | format_currency }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p><em>Sem imóveis detectados para o período selecionado.</em></p>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if mandatory_sections.project_consolidated.enabled %}
+    <div class="section page-break">
+        <div class="section-header">
+            <h2>Consolidado do Projeto</h2>
+        </div>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">Voos Processados</div>
+                <div class="metric-value">{{ mandatory_sections.project_consolidated.metrics.total_flights }}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Edificações Totais</div>
+                <div class="metric-value">{{ mandatory_sections.project_consolidated.metrics.total_buildings }}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Área de Terreno</div>
+                <div class="metric-value">{{ mandatory_sections.project_consolidated.metrics.terrain_area_total_sqm | format_area }}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Área Construída</div>
+                <div class="metric-value">{{ mandatory_sections.project_consolidated.metrics.built_area_total_sqm | format_area }}</div>
+            </div>
+        </div>
+
+        <div class="info-grid">
+            <div class="info-item">
+                <span class="info-label">Taxa de Ocupação:</span>
+                <span class="info-value">{{ mandatory_sections.project_consolidated.metrics.occupation_ratio_pct | format_number }}%</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Área Permeável:</span>
+                <span class="info-value">{{ mandatory_sections.project_consolidated.metrics.permeable_ratio_pct | format_number }}%</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Patches de Terreno:</span>
+                <span class="info-value">{{ mandatory_sections.project_consolidated.metrics.total_terrain_patches }}</span>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if mandatory_sections.fiscal_revenue.enabled %}
+    <div class="section page-break">
+        <div class="section-header">
+            <h2>Relatório Fiscal de Arrecadação</h2>
+        </div>
+
+        <div class="info-grid">
+            <div class="info-item">
+                <span class="info-label">Alíquota Referência (R$/m²):</span>
+                <span class="info-value">{{ mandatory_sections.fiscal_revenue.metrics.iptu_rate_per_sqm | format_currency }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Parcela Irregular Assumida:</span>
+                <span class="info-value">{{ mandatory_sections.fiscal_revenue.metrics.assumed_irregular_share_pct | format_number }}%</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Área Tributável Potencial:</span>
+                <span class="info-value">{{ mandatory_sections.fiscal_revenue.metrics.taxable_gain_area_sqm | format_area }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Ganho Anual Estimado:</span>
+                <span class="info-value"><strong>{{ mandatory_sections.fiscal_revenue.metrics.annual_tax_gain_estimate | format_currency }}</strong></span>
+            </div>
+        </div>
+        <p>
+            Estimativa paramétrica calculada sobre área construída detectada por IA. Valores dependem das regras
+            fiscais vigentes no município e devem ser validados pela equipe tributária local.
+        </p>
+    </div>
+    {% endif %}
+
+    {% if mandatory_sections.technical_qa.enabled %}
+    <div class="section page-break">
+        <div class="section-header">
+            <h2>QA Técnico</h2>
+        </div>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">QA Score</div>
+                <div class="metric-value">{{ (mandatory_sections.technical_qa.metrics.qa_score * 100) | round(1) }}<span class="metric-unit">%</span></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Confiança Média (Edificações)</div>
+                <div class="metric-value">{{ (mandatory_sections.technical_qa.metrics.avg_building_confidence * 100) | round(1) }}<span class="metric-unit">%</span></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Compacidade Média (Terreno)</div>
+                <div class="metric-value">{{ mandatory_sections.technical_qa.metrics.avg_terrain_compactness | format_number }}</div>
+            </div>
+        </div>
+
+        <div class="info-grid">
+            <div class="info-item">
+                <span class="info-label">Run de Medição:</span>
+                <span class="info-value">{{ mandatory_sections.technical_qa.metrics.measurement_run_id or '—' }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Concluído em:</span>
+                <span class="info-value">{{ mandatory_sections.technical_qa.metrics.run_completed_at | format_date if mandatory_sections.technical_qa.metrics.run_completed_at else '—' }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Threshold QA:</span>
+                <span class="info-value">{{ (mandatory_sections.technical_qa.metrics.qa_threshold * 100) | round(1) }}%</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Conformidade:</span>
+                <span class="info-value">{{ 'Conforme' if mandatory_sections.technical_qa.metrics.qa_compliant else 'Nao Conforme' }}</span>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- GEOSPATIAL INFO                                                   -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    {% if project.bbox_min_lon and project.bbox_max_lon %}
+    <div class="section page-break">
+        <div class="section-header">
+            <h2>{% if include_buildings and urban_analytics and urban_analytics.total_buildings %}5{% else %}4{% endif %}. Informações Geoespaciais</h2>
+        </div>
+
+        <h3>Bounding Box (EPSG:4326)</h3>
+        <div class="info-grid">
+            <div class="info-item">
+                <span class="info-label">Min Longitude:</span>
+                <span class="info-value">{{ project.bbox_min_lon }}°</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Min Latitude:</span>
+                <span class="info-value">{{ project.bbox_min_lat }}°</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Max Longitude:</span>
+                <span class="info-value">{{ project.bbox_max_lon }}°</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Max Latitude:</span>
+                <span class="info-value">{{ project.bbox_max_lat }}°</span>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- FOOTER                                                            -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div class="footer-note">
+        <p>
+            Relatório gerado automaticamente pela plataforma <strong>CM TECHMAP</strong>
+            — Inteligência Urbana para Cidades Inteligentes.
+        </p>
+        <p>
+            Este documento é confidencial e destinado ao uso exclusivo de profissionais
+            autorizados da gestão pública municipal.
+        </p>
+        <p>© 2026 CM TECHMAP — Todos os direitos reservados.</p>
+    </div>
+
+</body>
+</html>

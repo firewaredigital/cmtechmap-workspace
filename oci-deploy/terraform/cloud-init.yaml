@@ -1,0 +1,236 @@
+#cloud-config
+# ==============================================================================
+# CM TECHMAP — OCI Cloud-Init
+# Executa automaticamente no primeiro boot da VM ARM A1
+# Instala Docker, monta storage, configura sistema
+# ==============================================================================
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - unzip
+  - htop
+  - iotop
+  - tmux
+  - git
+  - jq
+  - fail2ban
+  - ufw
+  - rsync
+  - ncdu
+  - tree
+
+# ── Criar usuário deploy ─────────────────────────────────────────────────────
+users:
+  - default
+  - name: deploy
+    groups: [docker, sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+
+# ── Comandos executados no boot ──────────────────────────────────────────────
+runcmd:
+  # ── 1. Instalar Docker Engine ──────────────────────────────────────────────
+  - |
+    echo "══════════════════════════════════════════════════"
+    echo "  [1/8] Instalando Docker Engine..."
+    echo "══════════════════════════════════════════════════"
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+      tee /etc/apt/sources.list.d/docker.list > /dev/null
+    apt-get update
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    systemctl enable docker
+    systemctl start docker
+    usermod -aG docker ubuntu
+    usermod -aG docker deploy
+
+  # ── 2. Montar Block Volume ─────────────────────────────────────────────────
+  - |
+    echo "══════════════════════════════════════════════════"
+    echo "  [2/8] Configurando Block Volume..."
+    echo "══════════════════════════════════════════════════"
+    # Aguarda o block volume aparecer (paravirtualizado = /dev/sdb ou /dev/oracleoci/*)
+    sleep 10
+    # Detecta o dispositivo do block volume
+    BLOCK_DEV=""
+    for dev in /dev/sdb /dev/oracleoci/oraclevdb /dev/vdb; do
+      if [ -b "$dev" ]; then
+        BLOCK_DEV="$dev"
+        break
+      fi
+    done
+    if [ -z "$BLOCK_DEV" ]; then
+      echo "WARN: Block volume não encontrado, usando /dev/sdb"
+      BLOCK_DEV="/dev/sdb"
+    fi
+    echo "Block volume detectado: $BLOCK_DEV"
+    # Formata apenas se não tem filesystem
+    if ! blkid "$BLOCK_DEV" | grep -q "TYPE="; then
+      mkfs.ext4 -L cm-techmap-data "$BLOCK_DEV"
+      echo "Block volume formatado como ext4"
+    else
+      echo "Block volume já formatado, mantendo dados"
+    fi
+    # Monta em /data
+    mkdir -p /data
+    mount "$BLOCK_DEV" /data
+    # Adiciona ao fstab para mount automático
+    BLOCK_UUID=$(blkid -s UUID -o value "$BLOCK_DEV")
+    if ! grep -q "$BLOCK_UUID" /etc/fstab; then
+      echo "UUID=$BLOCK_UUID /data ext4 defaults,noatime,_netdev 0 2" >> /etc/fstab
+    fi
+    # Cria estrutura de diretórios
+    mkdir -p /data/{postgres,redis,minio,prometheus,grafana,certbot,flower,backups}
+    chown -R 1000:1000 /data
+    chmod -R 755 /data
+
+  # ── 3. Configurar Swap (4 GB) ─────────────────────────────────────────────
+  - |
+    echo "══════════════════════════════════════════════════"
+    echo "  [3/8] Configurando swap de 4 GB..."
+    echo "══════════════════════════════════════════════════"
+    if [ ! -f /swapfile ]; then
+      fallocate -l 4G /swapfile
+      chmod 600 /swapfile
+      mkswap /swapfile
+      swapon /swapfile
+      echo "/swapfile none swap sw 0 0" >> /etc/fstab
+    fi
+
+  # ── 4. Configurar sysctl para Docker ───────────────────────────────────────
+  - |
+    echo "══════════════════════════════════════════════════"
+    echo "  [4/8] Configurando sysctl para produção..."
+    echo "══════════════════════════════════════════════════"
+    cat >> /etc/sysctl.d/99-cm-techmap.conf << 'SYSCTL'
+    # Docker / Networking
+    net.core.somaxconn = 65535
+    net.ipv4.tcp_max_syn_backlog = 65535
+    net.ipv4.ip_forward = 1
+    net.ipv4.tcp_tw_reuse = 1
+    net.ipv4.tcp_fin_timeout = 15
+    net.core.netdev_max_backlog = 65535
+    # Memory
+    vm.swappiness = 10
+    vm.overcommit_memory = 1
+    vm.dirty_ratio = 40
+    vm.dirty_background_ratio = 10
+    # File descriptors
+    fs.file-max = 2097152
+    fs.inotify.max_user_watches = 524288
+    SYSCTL
+    sysctl -p /etc/sysctl.d/99-cm-techmap.conf
+
+  # ── 5. Configurar UFW (Firewall) ──────────────────────────────────────────
+  - |
+    echo "══════════════════════════════════════════════════"
+    echo "  [5/8] Configurando firewall UFW..."
+    echo "══════════════════════════════════════════════════"
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 22/tcp comment 'SSH'
+    ufw allow 80/tcp comment 'HTTP'
+    ufw allow 443/tcp comment 'HTTPS'
+    ufw --force enable
+
+  # ── 6. Configurar fail2ban ─────────────────────────────────────────────────
+  - |
+    echo "══════════════════════════════════════════════════"
+    echo "  [6/8] Configurando fail2ban..."
+    echo "══════════════════════════════════════════════════"
+    cat > /etc/fail2ban/jail.local << 'F2B'
+    [DEFAULT]
+    bantime = 3600
+    findtime = 600
+    maxretry = 5
+    backend = systemd
+
+    [sshd]
+    enabled = true
+    port = ssh
+    filter = sshd
+    maxretry = 3
+    bantime = 7200
+    F2B
+    systemctl enable fail2ban
+    systemctl restart fail2ban
+
+  # ── 7. Configurar Docker daemon ────────────────────────────────────────────
+  - |
+    echo "══════════════════════════════════════════════════"
+    echo "  [7/8] Configurando Docker daemon..."
+    echo "══════════════════════════════════════════════════"
+    mkdir -p /etc/docker
+    cat > /etc/docker/daemon.json << 'DOCKER'
+    {
+      "data-root": "/data/docker",
+      "storage-driver": "overlay2",
+      "log-driver": "json-file",
+      "log-opts": {
+        "max-size": "50m",
+        "max-file": "3"
+      },
+      "live-restore": true,
+      "default-ulimits": {
+        "nofile": {
+          "Name": "nofile",
+          "Hard": 65536,
+          "Soft": 65536
+        }
+      }
+    }
+    DOCKER
+    systemctl daemon-reload
+    systemctl restart docker
+
+  # ── 8. Criar diretório da aplicação ────────────────────────────────────────
+  - |
+    echo "══════════════════════════════════════════════════"
+    echo "  [8/8] Preparando diretório da aplicação..."
+    echo "══════════════════════════════════════════════════"
+    mkdir -p /opt/cm-techmap
+    chown -R deploy:deploy /opt/cm-techmap
+
+  # ── Anti-idle cron (evita reciclagem pela Oracle) ──────────────────────────
+  - |
+    echo "*/5 * * * * root curl -sf http://localhost:8000/api/v1/health > /dev/null 2>&1 || true" > /etc/cron.d/cm-techmap-keepalive
+    chmod 644 /etc/cron.d/cm-techmap-keepalive
+
+  # ── Concluído ──────────────────────────────────────────────────────────────
+  - |
+    echo ""
+    echo "══════════════════════════════════════════════════"
+    echo "  ✅ CM TECHMAP — VM provisionada com sucesso!"
+    echo "══════════════════════════════════════════════════"
+    echo "  Docker:      $(docker --version)"
+    echo "  Compose:     $(docker compose version)"
+    echo "  Storage:     $(df -h /data | tail -1 | awk '{print $2}')"
+    echo "  Swap:        $(free -h | grep Swap | awk '{print $2}')"
+    echo "══════════════════════════════════════════════════"
+
+# ── Configuração final ───────────────────────────────────────────────────────
+final_message: |
+  ══════════════════════════════════════════════════
+  CM TECHMAP — Cloud-Init concluído em $UPTIME segundos
+  Próximo passo: executar deploy-oci.sh
+  ══════════════════════════════════════════════════
+
+power_state:
+  mode: reboot
+  message: "Reiniciando após provisionamento inicial..."
+  timeout: 30
+  condition: true

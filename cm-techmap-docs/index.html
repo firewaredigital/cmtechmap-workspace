@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CM TECHMAP — Documentação do Usuário</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="top"><div class="w">
+<img src="img/logo.png" alt="CM TECHMAP">
+<nav>
+<a href="#login">Login</a>
+<a href="#dashboard">Dashboard</a>
+<a href="#projetos">Projetos</a>
+<a href="#mapa">Mapa 3D</a>
+<a href="#medicoes">Medições</a>
+</nav>
+</div></header>
+
+<!-- HERO -->
+<div class="hero">
+<h1>Documentação CM TECHMAP</h1>
+<p>Guia completo de uso da plataforma de mapeamento aéreo, processamento fotogramétrico e análise geoespacial para gestão urbana municipal.</p>
+<span class="ver">v1.0 — Junho 2026</span>
+</div>
+
+<!-- TOC -->
+<div class="w"><div class="toc">
+<h2>📑 Índice</h2>
+<ol>
+<li><a href="#visao">Visão Geral do Sistema</a></li>
+<li><a href="#login">Acessando o Sistema</a></li>
+<li><a href="#dashboard">Centro de Comando</a></li>
+<li><a href="#projetos">Gerenciamento de Projetos</a></li>
+<li><a href="#voos">Voos e Upload de Imagens</a></li>
+<li><a href="#assets">Assets Gerados</a></li>
+<li><a href="#mapa">Visualização no Mapa 3D</a></li>
+<li><a href="#medicoes">Ferramentas de Medição</a></li>
+<li><a href="#processamento">Processamento Fotogramétrico</a></li>
+<li><a href="#camadas">Camadas do Mapa</a></li>
+<li><a href="#admin">Administração</a></li>
+<li><a href="#atalhos">Atalhos de Teclado</a></li>
+</ol>
+</div></div>
+
+<main class="w">
+
+<!-- 1. VISÃO GERAL -->
+<section id="visao">
+<h2><span class="num">1</span> Visão Geral do Sistema</h2>
+<p>O CM TECHMAP é uma plataforma web de mapeamento aéreo e análise geoespacial desenvolvida para a gestão urbana municipal. O sistema permite o upload de imagens capturadas por drones, processamento fotogramétrico automatizado (via NodeODM), visualização de ortomosaicos georreferenciados em mapas 3D interativos e ferramentas de medição geodésica.</p>
+
+<div class="card-grid">
+<div class="card"><div class="ico">🛩️</div><h4>Upload de Imagens de Drone</h4><p>Faça upload das imagens aéreas capturadas em campo diretamente para o projeto.</p></div>
+<div class="card"><div class="ico">⚙️</div><h4>Processamento Automático</h4><p>O NodeODM processa as imagens e gera ortomosaicos, DSM e modelos 3D automaticamente.</p></div>
+<div class="card"><div class="ico">🗺️</div><h4>Mapa 3D Interativo</h4><p>Visualize ortomosaicos sobrepostos ao mapa com controles de terreno, câmera e atmosfera.</p></div>
+<div class="card"><div class="ico">📏</div><h4>Medições Geodésicas</h4><p>Meça distâncias, áreas e elevações diretamente sobre a imagem georreferenciada.</p></div>
+<div class="card"><div class="ico">🏢</div><h4>Edifícios 3D</h4><p>Visualize footprints de edifícios extrudados em 3D sobre o terreno real.</p></div>
+<div class="card"><div class="ico">📊</div><h4>Dashboard em Tempo Real</h4><p>Monitore KPIs, status de projetos e saúde dos serviços em um centro de comando.</p></div>
+</div>
+</section>
+
+<!-- 2. LOGIN -->
+<section id="login">
+<h2><span class="num">2</span> Acessando o Sistema</h2>
+<p>Para acessar o CM TECHMAP, abra o navegador e acesse o endereço fornecido pelo administrador.</p>
+
+<div class="img-wrap">
+<img src="img/01-login.png" alt="Tela de Login">
+<div class="cap">📸 Tela de login do CM TECHMAP</div>
+</div>
+
+<div class="steps">
+<div class="step">Acesse o endereço do sistema no navegador (ex: <code>https://cmtechmap.prefeitura.gov.br</code>)</div>
+<div class="step">Insira seu <strong>e-mail</strong> no campo "Email"</div>
+<div class="step">Insira sua <strong>senha</strong> no campo "Senha"</div>
+<div class="step">Clique no botão <strong>"Entrar"</strong></div>
+</div>
+
+<div class="tip tip-info">💡 As credenciais são fornecidas pelo administrador do sistema. Caso tenha esquecido sua senha, entre em contato com o suporte.</div>
+<div class="tip tip-warn">⚠️ Após 3 tentativas incorretas, sua conta poderá ser temporariamente bloqueada por segurança.</div>
+</section>
+
+<!-- 3. DASHBOARD -->
+<section id="dashboard">
+<h2><span class="num">3</span> Centro de Comando (Dashboard)</h2>
+<p>Após o login, você será direcionado ao <strong>Centro de Comando</strong> — a tela principal do sistema que apresenta uma visão consolidada de todos os dados e status da plataforma.</p>
+
+<div class="img-wrap">
+<img src="img/02-dashboard.png" alt="Dashboard">
+<div class="cap">📸 Centro de Comando — Dashboard principal do CM TECHMAP</div>
+</div>
+
+<h3>Barra de Navegação</h3>
+<p>No topo da tela, abaixo do cabeçalho com a logo, você encontra a <strong>barra de navegação horizontal</strong> com ícones. Cada ícone leva a uma seção diferente do sistema:</p>
+
+<div class="card-grid">
+<div class="card"><h4>🏠 Visão Geral</h4><p>Dashboard principal com KPIs e indicadores.</p></div>
+<div class="card"><h4>📁 Projetos</h4><p>Lista de todos os projetos de mapeamento.</p></div>
+<div class="card"><h4>🏗️ Análise Urbana</h4><p>Ferramentas de análise do espaço urbano.</p></div>
+<div class="card"><h4>💰 Fiscal IPTU</h4><p>Integração com dados fiscais municipais.</p></div>
+<div class="card"><h4>📊 Integração</h4><p>Conexões com sistemas externos.</p></div>
+<div class="card"><h4>📄 Relatórios</h4><p>Geração e consulta de relatórios.</p></div>
+</div>
+
+<h3>KPIs (Indicadores)</h3>
+<p>Os cards de KPI no topo mostram números em tempo real:</p>
+<ul style="color:var(--muted);font-size:.9rem;padding-left:20px;margin:10px 0">
+<li><strong>Projetos</strong> — Total de projetos cadastrados</li>
+<li><strong>Voos Realizados</strong> — Quantidade total de voos processados</li>
+<li><strong>Imagens Capturadas</strong> — Número total de imagens de drone</li>
+<li><strong>Área Mapeada</strong> — Área total coberta em km²</li>
+<li><strong>Assets Gerados</strong> — Ortomosaicos, DSMs e outros produtos</li>
+<li><strong>Relatórios</strong> — Relatórios gerados e completados</li>
+</ul>
+
+<h3>Status dos Projetos</h3>
+<p>O gráfico de rosca mostra a distribuição dos projetos por status: <span style="color:#3fb950">Processado</span>, <span style="color:var(--warn)">Pendente</span>, <span style="color:#58a6ff">Processando</span> e <span style="color:#ef4444">Erro</span>.</p>
+
+<h3>Infraestrutura</h3>
+<p>O card de Infraestrutura mostra o status em tempo real de todos os serviços: API, Redis, PostgreSQL, MinIO, NodeODM e Titiler.</p>
+</section>
+
+<!-- 4. PROJETOS -->
+<section id="projetos">
+<h2><span class="num">4</span> Gerenciamento de Projetos</h2>
+<p>A seção de Projetos é onde você cria, visualiza e gerencia todos os projetos de mapeamento aéreo.</p>
+
+<div class="img-wrap">
+<img src="img/03-projects.png" alt="Lista de Projetos">
+<div class="cap">📸 Lista de projetos com status e ações disponíveis</div>
+</div>
+
+<h3>Visualizando Projetos</h3>
+<p>Clique em <strong>"Projetos"</strong> na barra de navegação. Você verá uma tabela com todos os projetos, contendo:</p>
+<ul style="color:var(--muted);font-size:.9rem;padding-left:20px;margin:10px 0">
+<li>Nome do projeto</li>
+<li>Status atual (Processado, Pendente, Processando, Erro)</li>
+<li>Data de criação</li>
+<li>Ações disponíveis (Abrir, Excluir)</li>
+</ul>
+
+<h3>Abrindo um Projeto</h3>
+<p>Clique em qualquer projeto na lista para abrir sua página de detalhes. A página de detalhes possui quatro abas: <strong>Voos</strong>, <strong>Assets Gerados</strong>, <strong>Processamento</strong> e <strong>Camadas do Mapa</strong>.</p>
+</section>
+
+<!-- 5. VOOS -->
+<section id="voos">
+<h2><span class="num">5</span> Voos e Upload de Imagens</h2>
+<p>A aba <strong>Voos</strong> mostra todos os voos associados ao projeto e permite fazer upload de novas imagens de drone.</p>
+
+<div class="img-wrap">
+<img src="img/04-project-flights.png" alt="Aba de Voos">
+<div class="cap">📸 Aba de Voos — Listagem e upload de imagens</div>
+</div>
+
+<h3>Fazendo Upload de Imagens</h3>
+<div class="steps">
+<div class="step">Na aba <strong>Voos</strong>, clique no botão <strong>"Upload de Imagens"</strong></div>
+<div class="step">Selecione as imagens JPEG/TIFF capturadas pelo drone</div>
+<div class="step">Aguarde o upload ser concluído (a barra de progresso mostrará o andamento)</div>
+<div class="step">O sistema criará automaticamente um novo voo com as imagens enviadas</div>
+</div>
+
+<div class="tip tip-info">💡 As imagens devem conter metadados GPS (EXIF) para que o georreferenciamento funcione corretamente.</div>
+<div class="tip tip-warn">⚠️ Formatos aceitos: JPEG, TIFF, PNG. Tamanho máximo recomendado: 50MB por imagem.</div>
+</section>
+
+<!-- 6. ASSETS -->
+<section id="assets">
+<h2><span class="num">6</span> Assets Gerados</h2>
+<p>Após o processamento fotogramétrico, os produtos gerados aparecem na aba <strong>Assets Gerados</strong>.</p>
+
+<div class="img-wrap">
+<img src="img/05-project-assets.png" alt="Assets Gerados">
+<div class="cap">📸 Assets gerados — Ortomosaico, DSM e outros produtos</div>
+</div>
+
+<h3>Tipos de Assets</h3>
+<div class="card-grid">
+<div class="card"><h4>🗺️ Orthomosaic</h4><p>Imagem ortorretificada georreferenciada do terreno. Pode ser visualizada no mapa.</p></div>
+<div class="card"><h4>📐 DSM</h4><p>Modelo Digital de Superfície — dados de elevação para terreno 3D.</p></div>
+<div class="card"><h4>☁️ Nuvem de Pontos</h4><p>Representação 3D do terreno em pontos georreferenciados.</p></div>
+</div>
+
+<h3>Ações Disponíveis</h3>
+<ul style="color:var(--muted);font-size:.9rem;padding-left:20px;margin:10px 0">
+<li><strong>Ver no Mapa</strong> — Abre o ortomosaico sobreposto ao mapa 3D interativo (disponível apenas para Orthomosaic)</li>
+<li><strong>Download</strong> — Baixa o arquivo do asset para seu computador</li>
+</ul>
+</section>
+
+<!-- 7. MAPA 3D -->
+<section id="mapa">
+<h2><span class="num">7</span> Visualização no Mapa 3D</h2>
+<p>O modo de mapa é a funcionalidade principal do CM TECHMAP. Ao clicar em <strong>"Ver no Mapa"</strong> em um ortomosaico, o sistema entra em modo de tela cheia com a imagem georreferenciada sobreposta ao mapa base.</p>
+
+<div class="img-wrap">
+<img src="img/06-map-view.png" alt="Visualização no Mapa 3D">
+<div class="cap">📸 Modo Mapa — Ortomosaico sobreposto com painel de controle à direita e ferramentas à esquerda</div>
+</div>
+
+<h3>Layout do Modo Mapa</h3>
+<p>O modo mapa possui três áreas principais:</p>
+
+<div class="card-grid">
+<div class="card"><h4>◀ Toolbar Esquerda</h4><p>Ferramentas de medição (Distância, Área, Elevação) em formato vertical compacto.</p></div>
+<div class="card"><h4>🗺️ Área Central</h4><p>Mapa 3D interativo com a ortomosaica georreferenciada. Use scroll para zoom, arraste para mover.</p></div>
+<div class="card"><h4>▶ Painel Direito</h4><p>Controles do Gêmeo Digital 3D: transparência, câmera, terreno, atmosfera e coordenadas.</p></div>
+</div>
+
+<h3>Controles do Painel Direito</h3>
+<p>O painel <strong>"Gêmeo Digital 3D"</strong> à direita oferece os seguintes controles:</p>
+
+<div class="steps">
+<div class="step"><strong>Transparência da Camada</strong> — Slider para ajustar a opacidade do ortomosaico sobre o mapa base (0% a 100%)</div>
+<div class="step"><strong>Câmera</strong> — Três presets: <em>Perspectiva</em> (visão 3D), <em>Aéreo</em> (visão oblíqua) e <em>Orbital</em> (visão superior)</div>
+<div class="step"><strong>Terreno 3D</strong> — Ativa/desativa o relevo 3D. Quando disponível, mostra dados de elevação real (fotogrametria) ou estimado</div>
+<div class="step"><strong>Atmosfera</strong> — Ativa/desativa efeitos de céu e iluminação realistas</div>
+<div class="step"><strong>Sombreamento</strong> — Controla hillshade (sombreamento de relevo) com slider de intensidade</div>
+<div class="step"><strong>Edifícios 3D</strong> — Ativa/desativa a visualização de footprints de edifícios extrudados</div>
+<div class="step"><strong>Coordenadas</strong> — Mostra LAT/LNG do centro da área mapeada</div>
+</div>
+
+<h3>Barra de Informações (Inferior)</h3>
+<p>Na parte inferior da tela, uma barra mostra informações resumidas: <strong>Nome do Projeto</strong>, <strong>Área Mapeada</strong>, <strong>Voos</strong>, <strong>Imagens</strong>, <strong>Resolução</strong> e <strong>Coordenadas do Centro</strong>.</p>
+
+<h3>Navegação no Mapa</h3>
+<ul style="color:var(--muted);font-size:.9rem;padding-left:20px;margin:10px 0">
+<li><strong>Arrastar</strong> — Mover o mapa</li>
+<li><strong>Scroll do mouse</strong> — Zoom in/out</li>
+<li><strong>Ctrl + Arrastar</strong> — Rotacionar a câmera (modo 3D)</li>
+<li><strong>Shift + Arrastar</strong> — Inclinar a câmera</li>
+</ul>
+
+<h3>Voltando ao Projeto</h3>
+<p>Clique no botão <strong>"← Voltar para Projeto"</strong> no final do painel direito. Você retornará à página do projeto com a aba Assets Gerados já selecionada.</p>
+</section>
+
+<!-- 8. MEDIÇÕES -->
+<section id="medicoes">
+<h2><span class="num">8</span> Ferramentas de Medição</h2>
+<p>No modo mapa, a <strong>toolbar vertical à esquerda</strong> oferece três ferramentas de medição geodésica de alta precisão.</p>
+
+<h3>Ferramentas Disponíveis</h3>
+<div class="card-grid">
+<div class="card"><h4>📏 Distância</h4><p>Mede a distância geodésica entre dois ou mais pontos. Mostra resultado em metros ou km.</p></div>
+<div class="card"><h4>⬛ Área</h4><p>Mede a área de um polígono desenhado no mapa. Mostra resultado em m² ou hectares.</p></div>
+<div class="card"><h4>⛰️ Elevação</h4><p>Perfil de elevação ao longo de uma linha (requer DSM processado).</p></div>
+</div>
+
+<h3>Como Medir</h3>
+<div class="steps">
+<div class="step">Clique na ferramenta desejada na toolbar esquerda (o botão ficará destacado em azul)</div>
+<div class="step">Clique no mapa para adicionar pontos de medição</div>
+<div class="step">O valor aparece em tempo real no painel que se abre abaixo da toolbar</div>
+<div class="step">Dê <strong>duplo-clique</strong> ou pressione <kbd>Enter</kbd> para finalizar a medição</div>
+<div class="step">A medição é salva automaticamente e pode ser persistida no projeto clicando no ícone de salvar</div>
+</div>
+
+<h3>Atalhos de Teclado</h3>
+<p style="margin:10px 0">
+<kbd>Esc</kbd> Cancelar medição &nbsp;&nbsp;
+<kbd>Enter</kbd> Finalizar &nbsp;&nbsp;
+<kbd>Ctrl+Z</kbd> Desfazer último ponto
+</p>
+
+<div class="tip tip-ok">✅ As medições são geodésicas (calculadas sobre a curvatura da Terra), garantindo precisão mesmo em grandes distâncias.</div>
+</section>
+
+<!-- 9. PROCESSAMENTO -->
+<section id="processamento">
+<h2><span class="num">9</span> Processamento Fotogramétrico</h2>
+<p>A aba <strong>Processamento</strong> permite iniciar e acompanhar o processamento fotogramétrico das imagens de drone via NodeODM.</p>
+
+<div class="img-wrap">
+<img src="img/07-processing.png" alt="Processamento">
+<div class="cap">📸 Aba de Processamento — Controle do pipeline fotogramétrico</div>
+</div>
+
+<h3>Iniciando o Processamento</h3>
+<div class="steps">
+<div class="step">Certifique-se de que existe pelo menos um voo com imagens no projeto</div>
+<div class="step">Acesse a aba <strong>"Processamento"</strong> no detalhe do projeto</div>
+<div class="step">Clique em <strong>"Iniciar Processamento"</strong></div>
+<div class="step">O sistema enviará as imagens para o NodeODM e acompanhará o progresso automaticamente</div>
+<div class="step">Quando concluído, os assets gerados aparecerão na aba "Assets Gerados"</div>
+</div>
+
+<div class="tip tip-warn">⚠️ O tempo de processamento depende da quantidade e resolução das imagens. Pode levar de minutos a horas.</div>
+</section>
+
+<!-- 10. CAMADAS -->
+<section id="camadas">
+<h2><span class="num">10</span> Camadas do Mapa</h2>
+<p>A aba <strong>Camadas do Mapa</strong> permite gerenciar as camadas vetoriais e raster associadas ao projeto.</p>
+
+<div class="img-wrap">
+<img src="img/08-layers.png" alt="Camadas">
+<div class="cap">📸 Aba de Camadas do Mapa</div>
+</div>
+
+<p>Aqui você pode ativar/desativar camadas individuais, ajustar sua ordem de sobreposição e configurar a estilização visual de cada camada.</p>
+</section>
+
+<!-- 11. ADMIN -->
+<section id="admin">
+<h2><span class="num">11</span> Administração</h2>
+<p>A seção de <strong>Admin</strong> (acessível apenas para administradores) permite gerenciar usuários, permissões e configurações globais do sistema.</p>
+
+<h3>Funções Administrativas</h3>
+<div class="card-grid">
+<div class="card"><h4>👥 Gerenciar Usuários</h4><p>Criar, editar e desativar contas de usuários do sistema.</p></div>
+<div class="card"><h4>🔐 Permissões</h4><p>Definir níveis de acesso e papéis (Admin, Operador, Visualizador).</p></div>
+<div class="card"><h4>⚙️ Configurações</h4><p>Parâmetros globais do sistema, limites de upload, integrações.</p></div>
+<div class="card"><h4>🔔 Notificações</h4><p>Configurar alertas e notificações do sistema.</p></div>
+</div>
+</section>
+
+<!-- 12. ATALHOS -->
+<section id="atalhos">
+<h2><span class="num">12</span> Referência Rápida</h2>
+
+<h3>Atalhos de Teclado (Modo Mapa)</h3>
+<div class="card" style="margin:12px 0">
+<table style="width:100%;font-size:.88rem;color:var(--muted)">
+<tr><td><kbd>Scroll</kbd></td><td>Zoom in/out</td></tr>
+<tr><td><kbd>Arrastar</kbd></td><td>Mover o mapa</td></tr>
+<tr><td><kbd>Ctrl + Arrastar</kbd></td><td>Rotacionar câmera 3D</td></tr>
+<tr><td><kbd>Shift + Arrastar</kbd></td><td>Inclinar câmera</td></tr>
+<tr><td><kbd>Esc</kbd></td><td>Cancelar medição</td></tr>
+<tr><td><kbd>Enter</kbd></td><td>Finalizar medição</td></tr>
+<tr><td><kbd>Ctrl+Z</kbd></td><td>Desfazer último ponto</td></tr>
+</table>
+</div>
+
+<h3>Fluxo de Trabalho Resumido</h3>
+<div class="steps">
+<div class="step"><strong>Criar Projeto</strong> — Organize suas áreas de mapeamento</div>
+<div class="step"><strong>Upload de Imagens</strong> — Envie as fotos capturadas pelo drone</div>
+<div class="step"><strong>Processar</strong> — Inicie o processamento fotogramétrico</div>
+<div class="step"><strong>Visualizar</strong> — Abra o ortomosaico no mapa 3D</div>
+<div class="step"><strong>Analisar</strong> — Use as ferramentas de medição e controles 3D</div>
+<div class="step"><strong>Exportar</strong> — Baixe os assets ou gere relatórios</div>
+</div>
+
+<div class="tip tip-ok">✅ O CM TECHMAP está pronto para transformar dados brutos de drone em inteligência geoespacial acionável para a gestão urbana.</div>
+</section>
+
+</main>
+
+<!-- FOOTER -->
+<footer class="foot">
+<img src="img/logo.png" alt="CM TECHMAP"><br>
+CM TECHMAP — Plataforma de Mapeamento Aéreo e Análise Geoespacial<br>
+Documentação v1.0 · Junho 2026 · Desenvolvido por FIREWARE
+</footer>
+
+</body>
+</html>

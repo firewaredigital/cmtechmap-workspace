@@ -1,0 +1,205 @@
+# ==============================================================================
+# CM TECHMAP — Prometheus Alerting Rules
+# Critical alerts for production monitoring
+# ==============================================================================
+
+groups:
+  # ────────────────────────────────────────────────────────────────────────────
+  # Infrastructure Alerts
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: infrastructure
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU usage above 80%"
+          description: "Instance {{ $labels.instance }} CPU at {{ $value | humanize }}%"
+
+      - alert: HighMemoryUsage
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory usage above 85%"
+          description: "Instance {{ $labels.instance }} RAM at {{ $value | humanize }}%"
+
+      - alert: DiskSpaceLow
+        expr: (1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 > 80
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk space above 80%"
+          description: "Disk usage at {{ $value | humanize }}%"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Application Alerts (Backend API)
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: application
+    rules:
+      - alert: HighLatencyP99
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API P99 latency above 2 seconds"
+          description: "P99 latency is {{ $value | humanizeDuration }}"
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Error rate above 1%"
+          description: "{{ $value | humanizePercentage }} of requests are failing"
+
+      - alert: BackendDown
+        expr: up{job="cm-techmap-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CM TechMap backend is DOWN"
+          description: "Backend instance {{ $labels.instance }} is unreachable"
+
+      - alert: HighRequestRate
+        expr: rate(http_requests_total[1m]) > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusually high request rate (>500 req/s)"
+          description: "Current rate: {{ $value | humanize }} req/s"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Database Alerts (PostgreSQL + PgBouncer)
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: database
+    rules:
+      - alert: PostgreSQLDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is DOWN"
+
+      - alert: PostgreSQLHighConnections
+        expr: pg_stat_activity_count > 150
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL connections above 150"
+          description: "Current connections: {{ $value }}"
+
+      - alert: PgBouncerQueueHigh
+        expr: pgbouncer_pools_client_waiting_connections > 50
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PgBouncer queue depth above 50"
+          description: "{{ $value }} clients waiting for connections"
+
+      - alert: PgBouncerMaxClientsNear
+        expr: pgbouncer_databases_current_connections / 2000 > 0.80
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PgBouncer approaching max_client_conn (80%)"
+          description: "{{ $value | humanizePercentage }} of max connections used"
+
+      - alert: SlowQueries
+        expr: pg_stat_activity_max_tx_duration{datname="cm_techmap"} > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Long-running query detected (>30s)"
+          description: "Longest transaction: {{ $value | humanizeDuration }}"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Celery (Task Processing) Alerts
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: celery
+    rules:
+      - alert: CeleryQueueBacklog
+        expr: celery_active_tasks > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Celery task backlog above 100"
+          description: "{{ $value }} tasks pending"
+
+      - alert: CeleryWorkerDown
+        expr: celery_workers_online < 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No Celery workers online"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Storage (MinIO) Alerts
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: storage
+    rules:
+      - alert: MinIODown
+        expr: minio_cluster_health_status == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MinIO storage is DOWN"
+
+      - alert: MinIODiskUsageHigh
+        expr: minio_cluster_usage_total_bytes / minio_cluster_capacity_raw_total_bytes > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MinIO disk usage above 85%"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Redis Alerts
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: redis
+    rules:
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is DOWN"
+
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis memory above 85%"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Backup Alerts
+  # ────────────────────────────────────────────────────────────────────────────
+  - name: backup
+    rules:
+      - alert: BackupNotRunRecently
+        expr: time() - backup_last_success_timestamp > 86400 * 2
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful backup in 48 hours"
+          description: "Last backup: {{ $value | humanizeDuration }} ago"

@@ -1,0 +1,329 @@
+{
+  "id": "cm-techmap",
+  "realm": "cm-techmap",
+  "displayName": "CM TECHMAP — Inteligência Urbana",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": false,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "waitIncrementSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "maxDeltaTimeSeconds": 43200,
+  "failureFactor": 5,
+  "passwordPolicy": "length(8) and upperCase(1) and lowerCase(1) and digits(1)",
+  "defaultSignatureAlgorithm": "RS256",
+  "accessTokenLifespan": 86400,
+  "ssoSessionIdleTimeout": 86400,
+  "ssoSessionMaxLifespan": 86400,
+  "roles": {
+    "realm": [
+      {
+        "name": "super_admin",
+        "description": "Super Administrator — full platform access, tenant management, user deletion",
+        "composite": false
+      },
+      {
+        "name": "tenant_admin",
+        "description": "Tenant Administrator — manages users, projects, billing within a municipality",
+        "composite": false
+      },
+      {
+        "name": "gestor",
+        "description": "Manager — creates and manages projects, generates reports, views analytics",
+        "composite": false
+      },
+      {
+        "name": "operador",
+        "description": "Operator — uploads drone photos, creates flights, runs processing",
+        "composite": false
+      },
+      {
+        "name": "viewer",
+        "description": "Viewer — read-only access to maps, reports, and dashboard",
+        "composite": false
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "cm-techmap-api",
+      "name": "CM TECHMAP Backend API",
+      "description": "Confidential client for the FastAPI backend server",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "cm-techmap-api-dev-secret-2026",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "authorizationServicesEnabled": false,
+      "redirectUris": [
+        "http://localhost:8000/*",
+        "http://localhost/*",
+        "http://143.47.116.9/*",
+        "https://cm-techmap-frontend.vercel.app/*"
+      ],
+      "webOrigins": [
+        "http://localhost:8000",
+        "http://localhost",
+        "http://143.47.116.9",
+        "https://cm-techmap-frontend.vercel.app"
+      ],
+      "attributes": {
+        "access.token.lifespan": "86400",
+        "client.session.idle.timeout": "86400"
+      },
+      "protocolMappers": [
+        {
+          "name": "tenant_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "claim.name": "tenant_id",
+            "user.attribute": "tenant_id",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "department",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "claim.name": "department",
+            "user.attribute": "department",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "realm_roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "jsonType.label": "String"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "cm-techmap-frontend",
+      "name": "CM TECHMAP Frontend SPA",
+      "description": "Public client for the React/PatternFly frontend application",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "implicitFlowEnabled": false,
+      "redirectUris": [
+        "http://localhost:5173/*",
+        "http://localhost:5174/*",
+        "http://localhost:3000/*",
+        "http://localhost/*",
+        "http://143.47.116.9/*",
+        "https://cm-techmap-frontend.vercel.app/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000",
+        "http://localhost",
+        "http://143.47.116.9",
+        "https://cm-techmap-frontend.vercel.app"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5173/*"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "superadmin",
+      "email": "superadmin@cmtechmap.com.br",
+      "firstName": "Super",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "SuperAdmin@2026", "temporary": false}],
+      "realmRoles": ["super_admin"],
+      "attributes": {
+        "tenant_id": ["platform"],
+        "department": ["Plataforma"]
+      }
+    },
+    {
+      "username": "admin@prefeitura.gov.br",
+      "email": "admin@prefeitura.gov.br",
+      "firstName": "Carlos",
+      "lastName": "Mendes",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "Admin@2026", "temporary": false}],
+      "realmRoles": ["tenant_admin"],
+      "attributes": {
+        "tenant_id": ["prefeitura_brasilia"],
+        "department": ["Secretaria de Urbanismo"]
+      }
+    },
+    {
+      "username": "carlos.mendes",
+      "email": "carlos.mendes@prefeitura.gov.br",
+      "firstName": "Carlos",
+      "lastName": "Mendes",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "Senha123!", "temporary": false}],
+      "realmRoles": ["tenant_admin"],
+      "attributes": {
+        "tenant_id": ["prefeitura_brasilia"],
+        "department": ["Secretaria de Urbanismo"]
+      }
+    },
+    {
+      "username": "ana.souza",
+      "email": "ana.souza@prefeitura.gov.br",
+      "firstName": "Ana",
+      "lastName": "Souza",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "Ana@2026", "temporary": false}],
+      "realmRoles": ["gestor"],
+      "attributes": {
+        "tenant_id": ["prefeitura_brasilia"],
+        "department": ["Planejamento Urbano"]
+      }
+    },
+    {
+      "username": "fernanda.lima",
+      "email": "fernanda.lima@prefeitura.gov.br",
+      "firstName": "Fernanda",
+      "lastName": "Lima",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "Fernanda@2026", "temporary": false}],
+      "realmRoles": ["operador"],
+      "attributes": {
+        "tenant_id": ["prefeitura_brasilia"],
+        "department": ["Meio Ambiente"]
+      }
+    },
+    {
+      "username": "roberto.alves",
+      "email": "roberto.alves@prefeitura.gov.br",
+      "firstName": "Roberto",
+      "lastName": "Alves",
+      "enabled": false,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "Roberto@2026", "temporary": false}],
+      "realmRoles": ["operador"],
+      "attributes": {
+        "tenant_id": ["prefeitura_brasilia"],
+        "department": ["Obras Públicas"]
+      }
+    },
+    {
+      "username": "juliana.costa",
+      "email": "juliana.costa@prefeitura.gov.br",
+      "firstName": "Juliana",
+      "lastName": "Costa",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "Juliana@2026", "temporary": false}],
+      "realmRoles": ["gestor"],
+      "attributes": {
+        "tenant_id": ["prefeitura_brasilia"],
+        "department": ["SEMMA"]
+      }
+    },
+    {
+      "username": "pedro.santos",
+      "email": "pedro.santos@prefeitura.gov.br",
+      "firstName": "Pedro",
+      "lastName": "Santos",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "Pedro@2026", "temporary": false}],
+      "realmRoles": ["viewer"],
+      "attributes": {
+        "tenant_id": ["prefeitura_brasilia"],
+        "department": ["Gabinete do Prefeito"]
+      }
+    },
+    {
+      "username": "maria.oliveira",
+      "email": "maria.oliveira@prefeitura.gov.br",
+      "firstName": "Maria",
+      "lastName": "Oliveira",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "Maria@2026", "temporary": false}],
+      "realmRoles": ["operador"],
+      "attributes": {
+        "tenant_id": ["prefeitura_brasilia"],
+        "department": ["Infraestrutura"]
+      }
+    }
+  ],
+  "smtpServer": {
+    "host": "${SMTP_HOST:smtp.gmail.com}",
+    "port": "${SMTP_PORT:587}",
+    "from": "${SMTP_FROM:noreply@cmtechmap.com.br}",
+    "fromDisplayName": "CM TECHMAP",
+    "replyTo": "",
+    "ssl": "false",
+    "starttls": "true",
+    "auth": "true",
+    "user": "${SMTP_USER:}",
+    "password": "${SMTP_PASSWORD:}"
+  },
+  "identityProviders": [
+    {
+      "alias": "google",
+      "displayName": "Google",
+      "providerId": "google",
+      "enabled": true,
+      "trustEmail": true,
+      "storeToken": false,
+      "addReadTokenRoleOnCreate": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "clientId": "${GOOGLE_CLIENT_ID:CHANGE-ME}",
+        "clientSecret": "${GOOGLE_CLIENT_SECRET:CHANGE-ME}",
+        "defaultScope": "openid email profile",
+        "syncMode": "IMPORT",
+        "guiOrder": "1"
+      }
+    }
+  ],
+  "identityProviderMappers": [
+    {
+      "name": "google-tenant-mapper",
+      "identityProviderAlias": "google",
+      "identityProviderMapper": "hardcoded-attribute-idp-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "attribute": "tenant_id",
+        "attribute.value": "default"
+      }
+    }
+  ],
+  "internationalizationEnabled": true,
+  "supportedLocales": ["pt-BR", "en"],
+  "defaultLocale": "pt-BR"
+}

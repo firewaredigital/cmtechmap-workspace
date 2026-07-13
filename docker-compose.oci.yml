@@ -1,0 +1,615 @@
+# ==============================================================================
+# CM TECHMAP — OCI Always Free Docker Compose
+# Otimizado para VM ARM A1 Flex (4 OCPU, 24 GB RAM, 200 GB disco)
+# ==============================================================================
+# Usage:
+#   ./scripts/generate-secrets.sh .env.oci
+#   docker compose -f docker-compose.oci.yml --env-file .env.oci up -d
+#   docker compose -f docker-compose.oci.yml logs -f backend
+# ==============================================================================
+# Consumo estimado de RAM:
+#   PostgreSQL:     ~1 GB (limit 3 GB)
+#   Redis:          ~128 MB (limit 512 MB)
+#   PgBouncer:      ~32 MB (limit 128 MB)
+#   MinIO:          ~256 MB (limit 512 MB)
+#   Keycloak:       ~512 MB (limit 1 GB)
+#   Backend:        ~512 MB (limit 1.5 GB)
+#   Celery Worker:  ~512 MB (limit 2 GB)
+#   Flower:         ~64 MB (limit 256 MB)
+#   TiTiler:        ~256 MB (limit 1 GB)
+#   Martin:         ~64 MB (limit 256 MB)
+#   Nginx:          ~32 MB (limit 128 MB)
+#   Prometheus:     ~128 MB (limit 512 MB)
+#   Grafana:        ~128 MB (limit 512 MB)
+#   Backup:         ~32 MB (limit 256 MB)
+#   ─────────────────────────────────────────────
+#   TOTAL:          ~3.6 GB idle / ~10.6 GB peak
+#   Disponível:     24 GB → ✅ Folga confortável
+# ==============================================================================
+
+name: cm-techmap-oci
+
+services:
+  # ────────────────────────────────────────────────────────────────────────────
+  # PostgreSQL + PostGIS — Geospatial Database (OCI-optimized)
+  # ────────────────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgis/postgis:16-3.5
+    container_name: cmo-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cm_techmap}
+      POSTGRES_USER: ${POSTGRES_USER:-cm_techmap_oci}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_MULTIPLE_DATABASES: ${KC_POSTGRES_DB:-keycloak}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command: >
+      postgres
+        -c shared_buffers=1GB
+        -c effective_cache_size=3GB
+        -c maintenance_work_mem=256MB
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers=16MB
+        -c default_statistics_target=100
+        -c random_page_cost=1.1
+        -c effective_io_concurrency=200
+        -c work_mem=16MB
+        -c min_wal_size=256MB
+        -c max_wal_size=2GB
+        -c max_worker_processes=4
+        -c max_parallel_workers_per_gather=2
+        -c max_parallel_workers=4
+        -c max_parallel_maintenance_workers=2
+        -c max_connections=50
+        -c log_min_duration_statement=2000
+        -c log_checkpoints=on
+        -c log_connections=on
+        -c log_disconnections=on
+        -c log_lock_waits=on
+        -c log_temp_files=0
+        -c track_counts=on
+        -c track_io_timing=on
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - /data/postgres:/var/lib/postgresql/data
+      - ./docker/postgres/init-scripts:/docker-entrypoint-initdb.d:ro
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cm_techmap_oci} -d ${POSTGRES_DB:-cm_techmap}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+        reservations:
+          memory: 1G
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Redis — Cache & Broker (OCI-optimized)
+  # ────────────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: cmo-redis
+    restart: always
+    command: >
+      redis-server
+        --appendonly yes
+        --maxmemory ${REDIS_MAX_MEMORY:-256mb}
+        --maxmemory-policy allkeys-lru
+        --save 60 1000
+        --save 300 100
+        --tcp-backlog 511
+        --timeout 0
+        --tcp-keepalive 300
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - /data/redis:/data
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # PgBouncer — Connection Pooling
+  # ────────────────────────────────────────────────────────────────────────────
+  pgbouncer:
+    build:
+      context: ./docker/pgbouncer
+      dockerfile: Dockerfile
+    container_name: cmo-pgbouncer
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cm_techmap_oci}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    ports:
+      - "127.0.0.1:16432:6432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "6432"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # MinIO — S3-Compatible Object Storage (OCI-optimized)
+  # ────────────────────────────────────────────────────────────────────────────
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: cmo-minio
+    restart: always
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cm_techmap_oci}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
+      MINIO_BROWSER_REDIRECT_URL: ${DOMAIN_NAME:+https://${DOMAIN_NAME}/minio-console}
+    command: server /data --console-address ":9001"
+    ports:
+      - "127.0.0.1:19000:9000"
+      - "127.0.0.1:19001:9001"
+    volumes:
+      - /data/minio:/data
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  minio-setup:
+    image: quay.io/minio/mc:latest
+    container_name: cmo-minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cm_techmap_oci}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
+    volumes:
+      - ./docker/minio/init-buckets.sh:/init-buckets.sh:ro
+    entrypoint: ["/bin/sh", "/init-buckets.sh"]
+    networks:
+      - cm-network
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Keycloak — Identity & Access Management (OCI-optimized)
+  # ────────────────────────────────────────────────────────────────────────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    container_name: cmo-keycloak
+    restart: always
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD must be set}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${KC_POSTGRES_DB:-keycloak}
+      KC_DB_USERNAME: ${POSTGRES_USER:-cm_techmap_oci}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      KC_HOSTNAME: ${DOMAIN_NAME:+https://${DOMAIN_NAME}/auth}
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      # JVM tuning for constrained environment
+      JAVA_OPTS_APPEND: "-Xms256m -Xmx768m -XX:+UseG1GC -XX:MaxGCPauseMillis=100"
+    command: start --import-realm
+    ports:
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - ./docker/keycloak:/opt/keycloak/data/import:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '\"status\":\"UP\"'"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Backend — FastAPI (Gunicorn, OCI-optimized)
+  # ────────────────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./cm-techmap-backend
+      dockerfile: Dockerfile
+    container_name: cmo-backend
+    restart: always
+    command: >
+      gunicorn app.main:app
+        --worker-class uvicorn.workers.UvicornWorker
+        --bind 0.0.0.0:8000
+        --workers ${GUNICORN_WORKERS:-2}
+        --timeout 300
+        --graceful-timeout 30
+        --keep-alive 5
+        --max-requests 3000
+        --max-requests-jitter 300
+        --access-logfile -
+        --error-logfile -
+        --log-level ${API_LOG_LEVEL:-warning}
+    environment:
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - APP_SECRET_KEY=${APP_SECRET_KEY:?APP_SECRET_KEY must be set}
+      - APP_CORS_ORIGINS=${APP_CORS_ORIGINS:-*}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cm_techmap_oci}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-cm_techmap}
+      - DATABASE_URL_SYNC=postgresql+psycopg2://${POSTGRES_USER:-cm_techmap_oci}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-cm_techmap}
+      - DATABASE_URL_DIRECT=postgresql+asyncpg://${POSTGRES_USER:-cm_techmap_oci}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cm_techmap}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-cm_techmap_oci}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      - MINIO_USE_SSL=false
+      - KEYCLOAK_SERVER_URL=http://keycloak:8080
+      - KEYCLOAK_EXTERNAL_URL=${DOMAIN_NAME:+https://${DOMAIN_NAME}/auth}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-cm-techmap}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-cm-techmap-api}
+      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
+      - KEYCLOAK_ADMIN_USERNAME=${KEYCLOAK_ADMIN_USERNAME:-admin}
+      - KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD}
+      - TITILER_URL=http://titiler:80
+      - TITILER_EXTERNAL_URL=${DOMAIN_NAME:+https://${DOMAIN_NAME}/tiles}
+      - MARTIN_URL=http://martin:3000
+      - MARTIN_EXTERNAL_URL=${DOMAIN_NAME:+https://${DOMAIN_NAME}/vector}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+        reservations:
+          memory: 512M
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Celery Worker — Async Task Processing (OCI-optimized)
+  # ────────────────────────────────────────────────────────────────────────────
+  celery-worker:
+    build:
+      context: ./cm-techmap-backend
+      dockerfile: Dockerfile
+    container_name: cmo-celery-worker
+    restart: always
+    command: >
+      celery -A app.celery_app worker
+        --loglevel=info
+        --concurrency=${CELERY_CONCURRENCY:-2}
+        --autoscale=${CELERY_AUTOSCALE:-4,1}
+        --queues=default,processing,reports
+        --max-tasks-per-child=200
+        -n worker@%h
+    environment:
+      - APP_ENV=production
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cm_techmap_oci}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-cm_techmap}
+      - DATABASE_URL_SYNC=postgresql+psycopg2://${POSTGRES_USER:-cm_techmap_oci}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-cm_techmap}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-cm_techmap_oci}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      - MINIO_USE_SSL=false
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - cm-network
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Flower — Celery Monitoring
+  # ────────────────────────────────────────────────────────────────────────────
+  flower:
+    build:
+      context: ./cm-techmap-backend
+      dockerfile: Dockerfile
+    container_name: cmo-flower
+    restart: always
+    command: >
+      celery -A app.celery_app flower
+        --port=5555
+        --broker_api=redis://redis:6379/0
+        --basic-auth=${FLOWER_BASIC_AUTH:-admin:changeme}
+        --persistent=True
+        --db=/data/flower.db
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    ports:
+      - "127.0.0.1:5555:5555"
+    volumes:
+      - /data/flower:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - cm-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # TiTiler — Dynamic Raster Tile Server (OCI-optimized)
+  # ────────────────────────────────────────────────────────────────────────────
+  titiler:
+    image: ghcr.io/developmentseed/titiler:latest
+    container_name: cmo-titiler
+    restart: always
+    environment:
+      CPL_TMPDIR: /tmp
+      GDAL_CACHEMAX: "256"
+      GDAL_INGESTED_BYTES_AT_OPEN: "32768"
+      GDAL_DISABLE_READDIR_ON_OPEN: EMPTY_DIR
+      GDAL_HTTP_MERGE_CONSECUTIVE_RANGES: "YES"
+      GDAL_HTTP_MULTIPLEX: "YES"
+      VSI_CACHE: "TRUE"
+      VSI_CACHE_SIZE: "268435456"  # 256MB
+      PYTHONWARNINGS: ignore
+      TITILER_API_CORS_ORIGINS: "*"
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-cm_techmap_oci}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_S3_ENDPOINT: http://minio:9000
+      AWS_HTTPS: "NO"
+      AWS_VIRTUAL_HOSTING: "FALSE"
+    ports:
+      - "127.0.0.1:18888:80"
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Martin — PostGIS Vector Tile Server
+  # ────────────────────────────────────────────────────────────────────────────
+  martin:
+    image: ghcr.io/maplibre/martin:latest
+    container_name: cmo-martin
+    restart: always
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-cm_techmap_oci}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-cm_techmap}
+    ports:
+      - "127.0.0.1:13001:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Nginx — Reverse Proxy (HTTPS + HTTP/2)
+  # ────────────────────────────────────────────────────────────────────────────
+  nginx:
+    build:
+      context: ./docker/nginx
+      dockerfile: Dockerfile.prod
+    container_name: cmo-nginx
+    restart: always
+    environment:
+      DOMAIN_NAME: ${DOMAIN_NAME:-_}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/ssl:/etc/nginx/ssl
+      - /data/certbot:/var/www/certbot
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Backup — Automated PostgreSQL Backup to MinIO
+  # ────────────────────────────────────────────────────────────────────────────
+  backup:
+    build:
+      context: ./docker/backup
+      dockerfile: Dockerfile
+    container_name: cmo-backup
+    restart: always
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-cm_techmap}
+      - POSTGRES_USER=${POSTGRES_USER:-cm_techmap_oci}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - KC_POSTGRES_DB=${KC_POSTGRES_DB:-keycloak}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-cm_techmap_oci}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      - BACKUP_S3_BUCKET=${BACKUP_S3_BUCKET:-cm-techmap-backups}
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-14}
+      - BACKUP_CRON_SCHEDULE=${BACKUP_CRON_SCHEDULE:-0 3 * * *}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - cm-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Prometheus — Metrics Collection
+  # ────────────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: cmo-prometheus
+    restart: always
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--storage.tsdb.retention.size=5GB"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - /data/prometheus:/prometheus
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Grafana — Monitoring Dashboards
+  # ────────────────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: cmo-grafana
+    restart: always
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
+      GF_SERVER_ROOT_URL: "${DOMAIN_NAME:+https://${DOMAIN_NAME}/grafana/}"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_COOKIE_SECURE: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cm-techmap.json
+    ports:
+      - "127.0.0.1:3002:3000"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - /data/grafana:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - cm-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Networks
+# ──────────────────────────────────────────────────────────────────────────────
+networks:
+  cm-network:
+    driver: bridge
+    name: cm-techmap-oci-network
+
+# ──────────────────────────────────────────────────────────────────────────────
+# NOTE: Volumes use bind mounts to /data/ (Block Volume)
+# This ensures data persistence on the OCI Block Volume
+# and allows easy backup/restore via rsync or snapshot
+# ──────────────────────────────────────────────────────────────────────────────

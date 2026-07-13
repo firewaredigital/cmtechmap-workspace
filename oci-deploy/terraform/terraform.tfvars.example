@@ -1,0 +1,53 @@
+# ==============================================================================
+# CM TECHMAP — OCI Always Free — Terraform Variables
+# Copie este arquivo para terraform.tfvars e preencha com seus valores
+# ==============================================================================
+# 
+# Como obter os OCIDs:
+#   1. Faça login em https://cloud.oracle.com
+#   2. Tenancy OCID: Menu → Tenancy Details → OCID (copiar)
+#   3. User OCID:    Menu → Identity → Users → seu usuário → OCID
+#   4. Compartment:  Menu → Identity → Compartments → root → OCID
+#      (ou use o mesmo OCID da tenancy para o root compartment)
+#
+# Como criar API Key:
+#   1. Menu → Identity → Users → seu usuário → API Keys
+#   2. Add API Key → Generate API Key Pair
+#   3. Download Private Key → salvar em ~/.oci/oci_api_key.pem
+#   4. Copiar o Fingerprint gerado
+#
+# Como gerar SSH Key:
+#   ssh-keygen -t ed25519 -f ~/.ssh/oci_cm_techmap -C "cm-techmap-oci"
+# ==============================================================================
+
+# ── Obrigatório — Autenticação OCI ──────────────────────────────────────────
+tenancy_ocid     = "ocid1.tenancy.oc1..aaaaaaaaXXXXXXXXXXXXXXXX"
+user_ocid        = "ocid1.user.oc1..aaaaaaaaXXXXXXXXXXXXXXXX"
+fingerprint      = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+private_key_path = "~/.oci/oci_api_key.pem"
+compartment_ocid = "ocid1.compartment.oc1..aaaaaaaaXXXXXXXXXXXXXXXX"
+
+# ── Obrigatório — SSH ───────────────────────────────────────────────────────
+# Cole aqui o conteúdo de ~/.ssh/oci_cm_techmap.pub
+ssh_public_key       = "ssh-ed25519 AAAAC3NzaXXXXXXXXXXXXX cm-techmap-oci"
+ssh_private_key_path = "~/.ssh/oci_cm_techmap"
+
+# ── Região ──────────────────────────────────────────────────────────────────
+# Regiões próximas ao Brasil:
+#   sa-saopaulo-1   — São Paulo
+#   sa-vinhedo-1    — Vinhedo/Campinas
+#   sa-bogota-1     — Bogotá
+#   us-ashburn-1    — Ashburn (fallback estável)
+region = "sa-saopaulo-1"
+
+# ── Compute (Always Free defaults — NÃO altere sem necessidade) ─────────────
+# instance_shape     = "VM.Standard.A1.Flex"   # ARM Ampere A1
+# instance_ocpus     = 4                        # Máximo Always Free
+# instance_memory_gb = 24                       # Máximo Always Free
+
+# ── Storage ─────────────────────────────────────────────────────────────────
+# block_volume_size_gb = 150    # Boot(50) + Block(150) = 200 GB (máximo free)
+
+# ── Aplicação (opcional) ────────────────────────────────────────────────────
+# domain_name = "mapa.suaprefeitura.gov.br"   # Descomente se tiver domínio
+# instance_display_name = "cm-techmap-server"

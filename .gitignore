@@ -1,0 +1,29 @@
+# ==============================================================================
+# CM TECHMAP — Git Ignore
+# ==============================================================================
+
+# ── Production Secrets (NEVER commit) ─────────────────────────────────────────
+.env.production
+.env.local
+.env.*.local
+docker/nginx/ssl/
+
+# ── Build Artifacts ───────────────────────────────────────────────────────────
+cm-techmap-frontend/dist/
+cm-techmap-frontend/node_modules/
+cm-techmap-backend/__pycache__/
+cm-techmap-backend/**/__pycache__/
+*.pyc
+*.pyo
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# ── Docker volumes (local dev) ───────────────────────────────────────────────
+postgres_data/
+redis_data/
+minio_data/

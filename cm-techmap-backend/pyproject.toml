@@ -1,0 +1,103 @@
+[project]
+name = "cm-techmap-backend"
+version = "0.1.0"
+description = "CM TECHMAP — Smart Cities GovTech Platform Backend"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "Proprietary"}
+authors = [
+    {name = "FIREWARE Labs", email = "dev@fireware.com.br"},
+]
+
+dependencies = [
+    # ── Web Framework ──────────────────────────────────────────────────────
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "gunicorn>=23.0.0",
+    "python-multipart>=0.0.12",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+
+    # ── Database & ORM ─────────────────────────────────────────────────────
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "psycopg2-binary>=2.9.10",
+    "geoalchemy2>=0.15.0",
+    "alembic>=1.14.0",
+
+    # ── Async Task Queue ───────────────────────────────────────────────────
+    "celery[redis]>=5.4.0",
+    "redis>=5.2.0",
+    "flower>=2.0.0",
+
+    # ── Object Storage ─────────────────────────────────────────────────────
+    "minio>=7.2.0",
+
+    # ── Authentication & Security ──────────────────────────────────────────
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "httpx>=0.28.0",
+    "groq>=0.11.0",
+
+    # ── Geospatial Processing (Phase 2) ───────────────────────────────────
+    "rasterio>=1.4.0",
+    "rio-cogeo>=5.4.0",
+    "pyproj>=3.7.0",
+    "shapely>=2.0.0",
+
+    # ── Image Analysis (DSM Generation + Building Extraction) ─────────────
+    "numpy>=1.26.0",
+    "scipy>=1.14.0",
+
+    # ── Point Cloud Processing (Phase 4 — LAZ → Gaussian Splat) ──────────
+    "laspy[lazrs]>=2.5.0",
+
+    # ── 3D Model Processing (Phase 2 — OBJ → glTF/glb conversion) ────────
+    "trimesh[easy]>=4.5.0",
+
+    # ── WebSocket ──────────────────────────────────────────────────────────
+    "websockets>=14.0",
+
+    # ── Report Generation (Phase 4A) ──────────────────────────────────────
+    "weasyprint>=62.0",
+    "openpyxl>=3.1.0",
+    "jinja2>=3.1.0",
+
+    # ── Utilities ──────────────────────────────────────────────────────────
+    "orjson>=3.10.0",
+    "python-dateutil>=2.9.0",
+    "aiofiles>=24.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "A", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
