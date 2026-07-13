@@ -25,6 +25,7 @@ public sealed class MainForm : Form
     private readonly Label _statusLabel = new();
     private readonly RichTextBox _logOutput = new();
     private readonly Label _preflightLabel = new();
+    private readonly StringBuilder _sessionLog = new();
 
     private Process? _currentProcess;
     private InstallerSettings _settings = new();
@@ -441,6 +442,7 @@ public sealed class MainForm : Form
         if (exitCode == 0)
         {
             _statusLabel.Text = "Install completed";
+            _statusLabel.ForeColor = Color.FromArgb(124, 217, 153);
             AppendLog("\nInstall completed successfully.\n");
             MessageBox.Show(
                 "Instalação concluída com sucesso.\n\nSeu backend foi inicializado.",
@@ -450,14 +452,130 @@ public sealed class MainForm : Form
         }
         else
         {
-            _statusLabel.Text = "Install failed";
+            _statusLabel.Text = "Install failed (see details below)";
+            _statusLabel.ForeColor = Color.FromArgb(255, 140, 140);
             AppendLog($"\nInstall failed with exit code {exitCode}.\n");
-            MessageBox.Show(
-                "A instalação falhou. Veja o log para detalhes.",
-                "CM TechMap Installer",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            ShowFailureDialog(exitCode);
         }
+    }
+
+    private void ShowFailureDialog(int exitCode)
+    {
+        using var dialog = new Form
+        {
+            Text = "CM TechMap Installer - Falha",
+            Width = 860,
+            Height = 560,
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            BackColor = Color.FromArgb(18, 24, 35),
+            ForeColor = Color.FromArgb(230, 238, 248),
+            Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Point),
+        };
+
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(14),
+            ColumnCount = 1,
+            RowCount = 4,
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var title = new Label
+        {
+            Text = $"A instalação falhou (exit code {exitCode}).",
+            AutoSize = true,
+            Font = new Font("Segoe UI Semibold", 12F, FontStyle.Bold, GraphicsUnit.Point),
+            ForeColor = Color.FromArgb(255, 166, 166),
+            Margin = new Padding(0, 0, 0, 6),
+        };
+
+        var subtitle = new Label
+        {
+            Text = "Logs recentes abaixo para diagnóstico imediato:",
+            AutoSize = true,
+            ForeColor = Color.FromArgb(186, 202, 224),
+            Margin = new Padding(0, 0, 0, 8),
+        };
+
+        var logDetails = new RichTextBox
+        {
+            Dock = DockStyle.Fill,
+            ReadOnly = true,
+            BackColor = Color.FromArgb(10, 15, 24),
+            ForeColor = Color.FromArgb(184, 229, 205),
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Consolas", 9.5F, FontStyle.Regular, GraphicsUnit.Point),
+            Text = GetRecentLog(maxLines: 80),
+        };
+
+        var buttons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            AutoSize = true,
+            WrapContents = false,
+            Padding = new Padding(0, 10, 0, 0),
+        };
+
+        var okButton = new Button
+        {
+            Text = "OK",
+            Width = 110,
+            Height = 34,
+            DialogResult = DialogResult.OK,
+        };
+
+        var copyButton = new Button
+        {
+            Text = "Copiar logs",
+            Width = 130,
+            Height = 34,
+        };
+        copyButton.Click += (_, _) =>
+        {
+            try
+            {
+                Clipboard.SetText(logDetails.Text);
+            }
+            catch
+            {
+                // Keep dialog responsive even if clipboard is unavailable.
+            }
+        };
+
+        buttons.Controls.Add(okButton);
+        buttons.Controls.Add(copyButton);
+
+        root.Controls.Add(title, 0, 0);
+        root.Controls.Add(subtitle, 0, 1);
+        root.Controls.Add(logDetails, 0, 2);
+        root.Controls.Add(buttons, 0, 3);
+
+        dialog.Controls.Add(root);
+        dialog.AcceptButton = okButton;
+        dialog.ShowDialog(this);
+    }
+
+    private string GetRecentLog(int maxLines)
+    {
+        var text = _sessionLog.ToString();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "Sem linhas de log capturadas ate o momento.";
+        }
+
+        var normalized = text.Replace("\r\n", "\n");
+        var lines = normalized.Split('\n', StringSplitOptions.None);
+        var start = Math.Max(0, lines.Length - maxLines);
+        var recent = string.Join(Environment.NewLine, lines[start..]);
+        return string.IsNullOrWhiteSpace(recent) ? text : recent;
     }
 
     private ProcessStartInfo BuildInstallerProcessStartInfo()
@@ -593,6 +711,7 @@ public sealed class MainForm : Form
 
     private void AppendLog(string line)
     {
+        _sessionLog.Append(line);
         _logOutput.AppendText(line);
         _logOutput.SelectionStart = _logOutput.TextLength;
         _logOutput.ScrollToCaret();
