@@ -7,6 +7,8 @@ This module provides a complete Windows installation experience for CM TechMap b
 - distributable ZIP bundle (`CmTechMapInstaller-Windows-Bundle.zip`) ready to send to target machine,
 - CI pipeline that builds and publishes both artifacts.
 
+Build trigger note: updates in this directory trigger the Windows installer workflow.
+
 ## Included Components
 
 - GUI app source:
