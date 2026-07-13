@@ -33,8 +33,8 @@ Optional sidecars (enabled with `--with-tunnel`):
 If you do not want to copy the project manually, run this from the new Linux machine:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/firewaredigital/cm-techmap-frontend/main/applications/deploy/all-in-one/zero-touch-bootstrap.sh | bash -s -- \
-	--repo-url https://github.com/firewaredigital/cm-techmap-frontend.git \
+curl -fsSL https://raw.githubusercontent.com/firewaredigital/cmtechmap-workspace/main/applications/deploy/all-in-one/zero-touch-bootstrap.sh | bash -s -- \
+	--repo-url https://github.com/firewaredigital/cmtechmap-workspace.git \
 	--branch main \
 	--frontend-url https://YOUR_FRONTEND.vercel.app
 ```
@@ -49,8 +49,8 @@ This bootstrap script:
 For fixed Cloudflare hostname mode:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/firewaredigital/cm-techmap-frontend/main/applications/deploy/all-in-one/zero-touch-bootstrap.sh | bash -s -- \
-	--repo-url https://github.com/firewaredigital/cm-techmap-frontend.git \
+curl -fsSL https://raw.githubusercontent.com/firewaredigital/cmtechmap-workspace/main/applications/deploy/all-in-one/zero-touch-bootstrap.sh | bash -s -- \
+	--repo-url https://github.com/firewaredigital/cmtechmap-workspace.git \
 	--branch main \
 	--frontend-url https://YOUR_FRONTEND.vercel.app \
 	--tunnel-token YOUR_CLOUDFLARE_TUNNEL_TOKEN \
@@ -62,6 +62,25 @@ Notes:
 - default behavior is `--with-tunnel` + quick tunnel;
 - use `--without-tunnel` if you only need local/network access;
 - if the target machine already has an existing checkout with local changes, use another `--workspace-dir`.
+
+Windows (PowerShell, one command, runs bootstrap via WSL Ubuntu):
+
+```powershell
+powershell -ExecutionPolicy Bypass -Command "&([scriptblock]::Create((iwr -UseBasicParsing https://raw.githubusercontent.com/firewaredigital/cmtechmap-workspace/main/applications/deploy/all-in-one/zero-touch-bootstrap.ps1).Content)) -RepoUrl 'https://github.com/firewaredigital/cmtechmap-workspace.git' -Branch 'main' -FrontendUrl 'https://YOUR_FRONTEND.vercel.app'"
+```
+
+Alternative (save and run script explicitly):
+
+```powershell
+iwr -UseBasicParsing https://raw.githubusercontent.com/firewaredigital/cmtechmap-workspace/main/applications/deploy/all-in-one/zero-touch-bootstrap.ps1 -OutFile zero-touch-bootstrap.ps1
+powershell -ExecutionPolicy Bypass -File .\zero-touch-bootstrap.ps1 -RepoUrl "https://github.com/firewaredigital/cmtechmap-workspace.git" -Branch "main" -FrontendUrl "https://YOUR_FRONTEND.vercel.app"
+```
+
+Notes for Windows:
+
+- WSL with Ubuntu is required; script attempts install automatically if missing.
+- First WSL install can require reboot. Re-run same command after reboot.
+- Docker Desktop with WSL integration must be available for containers.
 
 1. Configure environment:
 

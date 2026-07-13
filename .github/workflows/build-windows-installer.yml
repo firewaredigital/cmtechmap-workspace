@@ -1,0 +1,128 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "deploy/windows-installer/**"
+      - "deploy/all-in-one/zero-touch-bootstrap.ps1"
+  release:
+    types: [published]
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+    env:
+      INSTALLER_EXE: deploy/windows-installer/src/CmTechMapInstaller/bin/Release/net8.0-windows/win-x64/publish/CmTechMapInstaller.exe
+      SETUP_EXE: deploy/windows-installer/packaging/CmTechMapInstaller-Setup.exe
+      CHECKSUM_FILE: deploy/windows-installer/packaging/SHA256SUMS.txt
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        working-directory: deploy/windows-installer/src/CmTechMapInstaller
+        run: dotnet restore
+
+      - name: Publish EXE
+        working-directory: deploy/windows-installer/src/CmTechMapInstaller
+        run: dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Setup EXE
+        working-directory: deploy/windows-installer/packaging
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "CmTechMapInstaller.iss"
+
+      - name: Import code-signing certificate
+        if: ${{ secrets.WIN_CODE_SIGN_CERT_BASE64 != '' && secrets.WIN_CODE_SIGN_CERT_PASSWORD != '' }}
+        shell: pwsh
+        run: |
+          $certPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String("${{ secrets.WIN_CODE_SIGN_CERT_BASE64 }}"))
+          "SIGN_CERT_PATH=$certPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Sign installer binaries
+        if: ${{ env.SIGN_CERT_PATH != '' && secrets.WIN_CODE_SIGN_CERT_PASSWORD != '' }}
+        shell: pwsh
+        run: |
+          $signtool = "C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe"
+          if (-not (Test-Path $signtool)) {
+            $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1).FullName
+          }
+
+          if (-not $signtool) {
+            throw "signtool.exe was not found on runner."
+          }
+
+          & $signtool sign /f "$env:SIGN_CERT_PATH" /p "${{ secrets.WIN_CODE_SIGN_CERT_PASSWORD }}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "$env:INSTALLER_EXE"
+          & $signtool sign /f "$env:SIGN_CERT_PATH" /p "${{ secrets.WIN_CODE_SIGN_CERT_PASSWORD }}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "$env:SETUP_EXE"
+
+      - name: Verify signatures
+        if: ${{ env.SIGN_CERT_PATH != '' && secrets.WIN_CODE_SIGN_CERT_PASSWORD != '' }}
+        shell: pwsh
+        run: |
+          Get-AuthenticodeSignature "$env:INSTALLER_EXE" | Format-List
+          Get-AuthenticodeSignature "$env:SETUP_EXE" | Format-List
+
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $hashExe = (Get-FileHash -Algorithm SHA256 "$env:INSTALLER_EXE").Hash.ToLower()
+          $hashSetup = (Get-FileHash -Algorithm SHA256 "$env:SETUP_EXE").Hash.ToLower()
+
+          @(
+            "$hashExe  CmTechMapInstaller.exe"
+            "$hashSetup  CmTechMapInstaller-Setup.exe"
+          ) | Set-Content -Path "$env:CHECKSUM_FILE" -Encoding ascii
+
+      - name: Build distributable ZIP bundle
+        shell: pwsh
+        run: |
+          $bundleDir = "deploy/windows-installer/packaging/dist"
+          $zipPath = "deploy/windows-installer/packaging/CmTechMapInstaller-Windows-Bundle.zip"
+          $quickstart = "deploy/windows-installer/packaging/README-INSTALL.txt"
+
+          if (Test-Path $bundleDir) { Remove-Item -Recurse -Force $bundleDir }
+          New-Item -ItemType Directory -Path $bundleDir | Out-Null
+
+          Copy-Item "$env:INSTALLER_EXE" (Join-Path $bundleDir "CmTechMapInstaller.exe") -Force
+          Copy-Item "$env:SETUP_EXE" (Join-Path $bundleDir "CmTechMapInstaller-Setup.exe") -Force
+          Copy-Item "$env:CHECKSUM_FILE" (Join-Path $bundleDir "SHA256SUMS.txt") -Force
+          Copy-Item $quickstart (Join-Path $bundleDir "README-INSTALL.txt") -Force
+
+          if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+          Compress-Archive -Path "$bundleDir\*" -DestinationPath $zipPath -CompressionLevel Optimal
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CmTechMapInstaller-win-x64
+          path: |
+            ${{ env.INSTALLER_EXE }}
+            ${{ env.SETUP_EXE }}
+            ${{ env.CHECKSUM_FILE }}
+            deploy/windows-installer/packaging/CmTechMapInstaller-Windows-Bundle.zip
+            deploy/windows-installer/packaging/README-INSTALL.txt
+
+      - name: Upload assets to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.INSTALLER_EXE }}
+            ${{ env.SETUP_EXE }}
+            ${{ env.CHECKSUM_FILE }}
+            deploy/windows-installer/packaging/CmTechMapInstaller-Windows-Bundle.zip
+            deploy/windows-installer/packaging/README-INSTALL.txt
