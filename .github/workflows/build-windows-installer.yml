@@ -17,7 +17,8 @@ jobs:
       INSTALLER_EXE: deploy/windows-installer/src/CmTechMapInstaller/bin/Release/net8.0-windows/win-x64/publish/CmTechMapInstaller.exe
       SETUP_EXE: deploy/windows-installer/packaging/CmTechMapInstaller-Setup.exe
       CHECKSUM_FILE: deploy/windows-installer/packaging/SHA256SUMS.txt
-      SIGN_CERT_PATH: ""
+      WIN_CODE_SIGN_CERT_BASE64: ${{ secrets.WIN_CODE_SIGN_CERT_BASE64 }}
+      WIN_CODE_SIGN_CERT_PASSWORD: ${{ secrets.WIN_CODE_SIGN_CERT_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -44,18 +45,17 @@ jobs:
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "CmTechMapInstaller.iss"
 
-      - name: Import code-signing certificate
-        if: ${{ secrets.WIN_CODE_SIGN_CERT_BASE64 != '' && secrets.WIN_CODE_SIGN_CERT_PASSWORD != '' }}
+      - name: Sign installer binaries (optional)
         shell: pwsh
         run: |
-          $certPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
-          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String("${{ secrets.WIN_CODE_SIGN_CERT_BASE64 }}"))
-          "SIGN_CERT_PATH=$certPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ([string]::IsNullOrWhiteSpace($env:WIN_CODE_SIGN_CERT_BASE64) -or [string]::IsNullOrWhiteSpace($env:WIN_CODE_SIGN_CERT_PASSWORD)) {
+            Write-Host "Code-signing secrets not configured; producing unsigned artifacts."
+            exit 0
+          }
 
-      - name: Sign installer binaries
-        if: ${{ secrets.WIN_CODE_SIGN_CERT_BASE64 != '' && secrets.WIN_CODE_SIGN_CERT_PASSWORD != '' }}
-        shell: pwsh
-        run: |
+          $certPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WIN_CODE_SIGN_CERT_BASE64))
+
           $signtool = "C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe"
           if (-not (Test-Path $signtool)) {
             $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
@@ -67,13 +67,17 @@ jobs:
             throw "signtool.exe was not found on runner."
           }
 
-          & $signtool sign /f "$env:SIGN_CERT_PATH" /p "${{ secrets.WIN_CODE_SIGN_CERT_PASSWORD }}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "$env:INSTALLER_EXE"
-          & $signtool sign /f "$env:SIGN_CERT_PATH" /p "${{ secrets.WIN_CODE_SIGN_CERT_PASSWORD }}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "$env:SETUP_EXE"
+          & $signtool sign /f "$certPath" /p "$env:WIN_CODE_SIGN_CERT_PASSWORD" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "$env:INSTALLER_EXE"
+          & $signtool sign /f "$certPath" /p "$env:WIN_CODE_SIGN_CERT_PASSWORD" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "$env:SETUP_EXE"
 
       - name: Verify signatures
-        if: ${{ secrets.WIN_CODE_SIGN_CERT_BASE64 != '' && secrets.WIN_CODE_SIGN_CERT_PASSWORD != '' }}
         shell: pwsh
         run: |
+          if ([string]::IsNullOrWhiteSpace($env:WIN_CODE_SIGN_CERT_BASE64) -or [string]::IsNullOrWhiteSpace($env:WIN_CODE_SIGN_CERT_PASSWORD)) {
+            Write-Host "Skipping signature verification (unsigned build)."
+            exit 0
+          }
+
           Get-AuthenticodeSignature "$env:INSTALLER_EXE" | Format-List
           Get-AuthenticodeSignature "$env:SETUP_EXE" | Format-List
 
