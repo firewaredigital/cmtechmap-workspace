@@ -120,6 +120,11 @@ Na tela inicial do instalador:
 3. (Opcional) marque `Dar permissao de administrador para este usuario`.
 4. Clique em `Install Now`.
 
+Observacao importante de login:
+
+- Na tela de login da aplicacao, use o `email` do usuario inicial como identificador.
+- Mesmo que exista campo de login no instalador, o fluxo de autenticacao atual valida pelo email.
+
 Fluxo automatico feito pelo instalador:
 
 1. Sobe o ambiente completo (backend + Keycloak + banco + servicos auxiliares).
