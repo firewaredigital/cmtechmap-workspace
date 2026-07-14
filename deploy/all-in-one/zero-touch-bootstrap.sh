@@ -198,9 +198,14 @@ create_initial_keycloak_user() {
   local env_file="$1"
   local name="$2"
   local email="$3"
-  local username="$4"
+  local username_input="$4"
   local password="$5"
   local is_admin="$6"
+
+  # Current web login sends the email as Keycloak username.
+  # Keep provisioning aligned to avoid "user not found" during login.
+  local username
+  username="$email"
 
   local host_keycloak_port
   local keycloak_admin_username
@@ -220,6 +225,8 @@ create_initial_keycloak_user() {
   local clients_json
   local realm_mgmt_client_id
   local role_json
+  local first_name
+  local last_name
 
   host_keycloak_port="$(strip_quotes "$(read_env_var "$env_file" "HOST_KEYCLOAK_PORT")")"
   keycloak_admin_username="$(strip_quotes "$(read_env_var "$env_file" "KEYCLOAK_ADMIN_USERNAME")")"
@@ -250,10 +257,26 @@ create_initial_keycloak_user() {
   user_id="$(printf '%s' "$users_json" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
 
   if [[ -z "$user_id" ]]; then
+    users_json="$(curl -sS -G "${keycloak_base}/admin/realms/${keycloak_realm}/users" \
+      -H "Authorization: Bearer ${keycloak_token}" \
+      --data-urlencode "email=${email}" \
+      --data-urlencode "exact=true")"
+    user_id="$(printf '%s' "$users_json" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+  fi
+
+  if [[ -z "$user_id" ]]; then
     escaped_name="$(json_escape "$name")"
     escaped_email="$(json_escape "$email")"
     escaped_username="$(json_escape "$username")"
-    create_payload="{\"enabled\":true,\"emailVerified\":true,\"firstName\":\"${escaped_name}\",\"username\":\"${escaped_username}\",\"email\":\"${escaped_email}\"}"
+    first_name="${name%% *}"
+    if [[ "$name" == *" "* ]]; then
+      last_name="${name#* }"
+    else
+      last_name="${name%% *}"
+    fi
+    first_name="$(json_escape "$first_name")"
+    last_name="$(json_escape "$last_name")"
+    create_payload="{\"enabled\":true,\"emailVerified\":true,\"firstName\":\"${first_name}\",\"lastName\":\"${last_name}\",\"username\":\"${escaped_username}\",\"email\":\"${escaped_email}\"}"
 
     status="$(keycloak_request_status "POST" "${keycloak_base}/admin/realms/${keycloak_realm}/users" "$keycloak_token" "$create_payload")"
     if [[ "$status" != "201" && "$status" != "409" ]]; then
@@ -296,6 +319,9 @@ create_initial_keycloak_user() {
     fi
   fi
 
+  if [[ -n "$username_input" && "$username_input" != "$email" ]]; then
+    echo "Aviso: o login informado ('${username_input}') foi ignorado para compatibilidade. Use o email para entrar." >&2
+  fi
   echo "Usuario inicial '${username}' configurado com sucesso."
 }
 
