@@ -15,6 +15,12 @@ public sealed class MainForm : Form
     private readonly TextBox _tunnelTokenText = new();
     private readonly TextBox _tunnelHostnameText = new();
     private readonly TextBox _workspaceDirText = new();
+    private readonly CheckBox _createInitialUserCheck = new();
+    private readonly TextBox _initialUserNameText = new();
+    private readonly TextBox _initialUserEmailText = new();
+    private readonly TextBox _initialUserUsernameText = new();
+    private readonly TextBox _initialUserPasswordText = new();
+    private readonly CheckBox _initialUserAdminCheck = new();
     private readonly CheckBox _withTunnelCheck = new();
     private readonly CheckBox _quickTunnelCheck = new();
     private readonly CheckBox _skipSmokeCheck = new();
@@ -136,6 +142,24 @@ public sealed class MainForm : Form
         AddLabeledField(grid, 5, "Tunnel Token (optional)", _tunnelTokenText, mask: true);
         AddLabeledField(grid, 6, "Tunnel Hostname (optional)", _tunnelHostnameText);
 
+        _createInitialUserCheck.Text = "Criar usuario inicial automaticamente";
+        _createInitialUserCheck.AutoSize = true;
+        _createInitialUserCheck.CheckedChanged += (_, _) =>
+        {
+            ToggleInitialUserFields();
+            EvaluatePreflight();
+        };
+        grid.Controls.Add(_createInitialUserCheck, 1, 7);
+
+        AddLabeledField(grid, 8, "Nome completo (usuario inicial)", _initialUserNameText);
+        AddLabeledField(grid, 9, "Email (usuario inicial)", _initialUserEmailText);
+        AddLabeledField(grid, 10, "Login (usuario inicial)", _initialUserUsernameText);
+        AddLabeledField(grid, 11, "Senha inicial", _initialUserPasswordText, mask: true);
+
+        _initialUserAdminCheck.Text = "Dar permissao de administrador para este usuario";
+        _initialUserAdminCheck.AutoSize = true;
+        grid.Controls.Add(_initialUserAdminCheck, 1, 12);
+
         _withTunnelCheck.Text = "Enable tunnel";
         _withTunnelCheck.AutoSize = true;
         _withTunnelCheck.CheckedChanged += (_, _) =>
@@ -170,14 +194,26 @@ public sealed class MainForm : Form
         optionsPanel.Controls.Add(_skipSmokeCheck);
         optionsPanel.Controls.Add(_skipFrontendPatchCheck);
 
-        grid.Controls.Add(optionsPanel, 1, 7);
+        grid.Controls.Add(optionsPanel, 1, 13);
 
         _preflightLabel.AutoSize = true;
         _preflightLabel.ForeColor = Color.FromArgb(255, 197, 102);
         _preflightLabel.Margin = new Padding(0, 8, 0, 0);
-        grid.Controls.Add(_preflightLabel, 1, 8);
+        grid.Controls.Add(_preflightLabel, 1, 14);
+
+        ToggleInitialUserFields();
 
         return grid;
+    }
+
+    private void ToggleInitialUserFields()
+    {
+        var enabled = _createInitialUserCheck.Checked;
+        _initialUserNameText.Enabled = enabled;
+        _initialUserEmailText.Enabled = enabled;
+        _initialUserUsernameText.Enabled = enabled;
+        _initialUserPasswordText.Enabled = enabled;
+        _initialUserAdminCheck.Enabled = enabled;
     }
 
     private void AddLabeledField(TableLayoutPanel grid, int row, string label, TextBox textBox, bool mask = false)
@@ -305,6 +341,10 @@ public sealed class MainForm : Form
         _skipFrontendPatchCheck.Checked = false;
         _quickTunnelCheck.Enabled = true;
         _tunnelPublicUrlText.Enabled = true;
+        _createInitialUserCheck.Checked = false;
+        _initialUserAdminCheck.Checked = false;
+        _initialUserPasswordText.UseSystemPasswordChar = true;
+        ToggleInitialUserFields();
     }
 
     private void LoadSettingsIntoUi()
@@ -322,6 +362,13 @@ public sealed class MainForm : Form
         _tunnelPublicUrlText.Text = _settings.TunnelPublicUrl;
         _skipSmokeCheck.Checked = _settings.SkipSmoke;
         _skipFrontendPatchCheck.Checked = _settings.SkipFrontendPatch;
+        _createInitialUserCheck.Checked = _settings.CreateInitialUser;
+        _initialUserNameText.Text = _settings.InitialUserName;
+        _initialUserEmailText.Text = _settings.InitialUserEmail;
+        _initialUserUsernameText.Text = _settings.InitialUserUsername;
+        _initialUserPasswordText.Text = _settings.InitialUserPassword;
+        _initialUserAdminCheck.Checked = _settings.InitialUserAdmin;
+        ToggleInitialUserFields();
     }
 
     private void SaveSettingsFromUi()
@@ -337,6 +384,12 @@ public sealed class MainForm : Form
         _settings.TunnelPublicUrl = _tunnelPublicUrlText.Text.Trim();
         _settings.SkipSmoke = _skipSmokeCheck.Checked;
         _settings.SkipFrontendPatch = _skipFrontendPatchCheck.Checked;
+        _settings.CreateInitialUser = _createInitialUserCheck.Checked;
+        _settings.InitialUserName = _initialUserNameText.Text.Trim();
+        _settings.InitialUserEmail = _initialUserEmailText.Text.Trim();
+        _settings.InitialUserUsername = _initialUserUsernameText.Text.Trim();
+        _settings.InitialUserPassword = _initialUserPasswordText.Text;
+        _settings.InitialUserAdmin = _initialUserAdminCheck.Checked;
         _settings.Save();
     }
 
@@ -357,6 +410,26 @@ public sealed class MainForm : Form
         if (_withTunnelCheck.Checked && !_quickTunnelCheck.Checked && string.IsNullOrWhiteSpace(_tunnelTokenText.Text))
         {
             warnings.Add("Token tunnel selected but token is empty");
+        }
+
+        if (_createInitialUserCheck.Checked)
+        {
+            if (string.IsNullOrWhiteSpace(_initialUserNameText.Text))
+            {
+                warnings.Add("Nome do usuario inicial obrigatorio");
+            }
+            if (string.IsNullOrWhiteSpace(_initialUserEmailText.Text) || !Regex.IsMatch(_initialUserEmailText.Text.Trim(), @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
+            {
+                warnings.Add("Email do usuario inicial invalido");
+            }
+            if (string.IsNullOrWhiteSpace(_initialUserUsernameText.Text))
+            {
+                warnings.Add("Login do usuario inicial obrigatorio");
+            }
+            if (string.IsNullOrWhiteSpace(_initialUserPasswordText.Text) || _initialUserPasswordText.Text.Length < 8)
+            {
+                warnings.Add("Senha inicial deve ter ao menos 8 caracteres");
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(_tunnelHostnameText.Text) && !Regex.IsMatch(_tunnelHostnameText.Text.Trim(), "^[a-zA-Z0-9.-]+$"))
@@ -675,6 +748,19 @@ public sealed class MainForm : Form
         if (_skipFrontendPatchCheck.Checked)
         {
             args.Add("-SkipFrontendPatch");
+        }
+
+        if (_createInitialUserCheck.Checked)
+        {
+            args.Add("-CreateInitialUser");
+            args.Add($"-InitialUserName '{PsEscape(_initialUserNameText.Text.Trim())}'");
+            args.Add($"-InitialUserEmail '{PsEscape(_initialUserEmailText.Text.Trim())}'");
+            args.Add($"-InitialUserUsername '{PsEscape(_initialUserUsernameText.Text.Trim())}'");
+            args.Add($"-InitialUserPassword '{PsEscape(_initialUserPasswordText.Text)}'");
+            if (_initialUserAdminCheck.Checked)
+            {
+                args.Add("-InitialUserAdmin");
+            }
         }
 
         return string.Join(" ", args);

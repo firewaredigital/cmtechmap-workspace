@@ -19,6 +19,12 @@ Options:
   --tunnel-token <token>       Cloudflare tunnel token (stable hostname mode).
   --tunnel-hostname <host>     Cloudflare tunnel hostname (without scheme).
   --tunnel-public-url <url>    Fixed public URL for tunnel mode.
+  --create-initial-user        Create first application user automatically.
+  --initial-user-name <name>   Full name for initial user.
+  --initial-user-email <mail>  Email for initial user.
+  --initial-user-username <u>  Username/login for initial user.
+  --initial-user-password <p>  Initial password for initial user.
+  --initial-user-admin         Grant admin privileges to initial user.
   --skip-frontend-patch        Do not patch frontend vercel rewrites.
   --skip-smoke                 Skip smoke checks.
   --help                       Show this help.
@@ -106,6 +112,193 @@ normalize_url() {
   fi
 }
 
+read_env_var() {
+  local env_file="$1"
+  local key="$2"
+  local value
+  value="$(grep -E "^${key}=" "$env_file" | tail -n1 | sed "s/^${key}=//" || true)"
+  echo "$value"
+}
+
+strip_quotes() {
+  local v="$1"
+  v="${v%\"}"
+  v="${v#\"}"
+  v="${v%\'}"
+  v="${v#\'}"
+  echo "$v"
+}
+
+json_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/ }"
+  echo "$value"
+}
+
+extract_json_string() {
+  local json="$1"
+  local key="$2"
+  printf '%s' "$json" | sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | head -n1
+}
+
+keycloak_request() {
+  local method="$1"
+  local url="$2"
+  local token="$3"
+  local data="${4:-}"
+
+  if [[ -n "$data" ]]; then
+    curl -sS -X "$method" "$url" -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" -d "$data"
+  else
+    curl -sS -X "$method" "$url" -H "Authorization: Bearer ${token}"
+  fi
+}
+
+keycloak_request_status() {
+  local method="$1"
+  local url="$2"
+  local token="$3"
+  local data="${4:-}"
+
+  if [[ -n "$data" ]]; then
+    curl -sS -o /tmp/cmtechmap-keycloak-response.json -w "%{http_code}" -X "$method" "$url" -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" -d "$data"
+  else
+    curl -sS -o /tmp/cmtechmap-keycloak-response.json -w "%{http_code}" -X "$method" "$url" -H "Authorization: Bearer ${token}"
+  fi
+}
+
+resolve_keycloak_base_and_token() {
+  local host_port="$1"
+  local admin_user="$2"
+  local admin_password="$3"
+
+  local base
+  local response
+  local token
+  for base in "http://127.0.0.1:${host_port}" "http://127.0.0.1:${host_port}/auth"; do
+    response="$(curl -sS --max-time 10 -X POST "${base}/realms/master/protocol/openid-connect/token" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      --data-urlencode "grant_type=password" \
+      --data-urlencode "client_id=admin-cli" \
+      --data-urlencode "username=${admin_user}" \
+      --data-urlencode "password=${admin_password}" || true)"
+    token="$(extract_json_string "$response" "access_token")"
+    if [[ -n "$token" ]]; then
+      echo "${base}|${token}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+create_initial_keycloak_user() {
+  local env_file="$1"
+  local name="$2"
+  local email="$3"
+  local username="$4"
+  local password="$5"
+  local is_admin="$6"
+
+  local host_keycloak_port
+  local keycloak_admin_username
+  local keycloak_admin_password
+  local keycloak_realm
+  local base_and_token
+  local keycloak_base
+  local keycloak_token
+  local users_json
+  local user_id
+  local escaped_name
+  local escaped_email
+  local escaped_username
+  local escaped_password
+  local create_payload
+  local status
+  local clients_json
+  local realm_mgmt_client_id
+  local role_json
+
+  host_keycloak_port="$(strip_quotes "$(read_env_var "$env_file" "HOST_KEYCLOAK_PORT")")"
+  keycloak_admin_username="$(strip_quotes "$(read_env_var "$env_file" "KEYCLOAK_ADMIN_USERNAME")")"
+  keycloak_admin_password="$(strip_quotes "$(read_env_var "$env_file" "KEYCLOAK_ADMIN_PASSWORD")")"
+  keycloak_realm="$(strip_quotes "$(read_env_var "$env_file" "KEYCLOAK_REALM")")"
+
+  if [[ -z "$host_keycloak_port" ]]; then
+    host_keycloak_port="8080"
+  fi
+  if [[ -z "$keycloak_admin_username" || -z "$keycloak_admin_password" || -z "$keycloak_realm" ]]; then
+    echo "Nao foi possivel carregar credenciais do Keycloak para criar usuario inicial." >&2
+    return 1
+  fi
+
+  echo "Configurando usuario inicial no Keycloak..."
+  if ! base_and_token="$(resolve_keycloak_base_and_token "$host_keycloak_port" "$keycloak_admin_username" "$keycloak_admin_password")"; then
+    echo "Falha ao autenticar no Keycloak Admin API. Verifique se o Keycloak subiu corretamente." >&2
+    return 1
+  fi
+
+  keycloak_base="${base_and_token%%|*}"
+  keycloak_token="${base_and_token#*|}"
+
+  users_json="$(curl -sS -G "${keycloak_base}/admin/realms/${keycloak_realm}/users" \
+    -H "Authorization: Bearer ${keycloak_token}" \
+    --data-urlencode "username=${username}" \
+    --data-urlencode "exact=true")"
+  user_id="$(printf '%s' "$users_json" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+
+  if [[ -z "$user_id" ]]; then
+    escaped_name="$(json_escape "$name")"
+    escaped_email="$(json_escape "$email")"
+    escaped_username="$(json_escape "$username")"
+    create_payload="{\"enabled\":true,\"emailVerified\":true,\"firstName\":\"${escaped_name}\",\"username\":\"${escaped_username}\",\"email\":\"${escaped_email}\"}"
+
+    status="$(keycloak_request_status "POST" "${keycloak_base}/admin/realms/${keycloak_realm}/users" "$keycloak_token" "$create_payload")"
+    if [[ "$status" != "201" && "$status" != "409" ]]; then
+      echo "Falha ao criar usuario inicial (HTTP ${status})." >&2
+      cat /tmp/cmtechmap-keycloak-response.json >&2 || true
+      return 1
+    fi
+
+    users_json="$(curl -sS -G "${keycloak_base}/admin/realms/${keycloak_realm}/users" \
+      -H "Authorization: Bearer ${keycloak_token}" \
+      --data-urlencode "username=${username}" \
+      --data-urlencode "exact=true")"
+    user_id="$(printf '%s' "$users_json" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+  fi
+
+  if [[ -z "$user_id" ]]; then
+    echo "Nao foi possivel obter o ID do usuario inicial no Keycloak." >&2
+    return 1
+  fi
+
+  escaped_password="$(json_escape "$password")"
+  status="$(keycloak_request_status "PUT" "${keycloak_base}/admin/realms/${keycloak_realm}/users/${user_id}/reset-password" "$keycloak_token" "{\"type\":\"password\",\"temporary\":false,\"value\":\"${escaped_password}\"}")"
+  if [[ "$status" != "204" ]]; then
+    echo "Falha ao definir senha do usuario inicial (HTTP ${status})." >&2
+    cat /tmp/cmtechmap-keycloak-response.json >&2 || true
+    return 1
+  fi
+
+  if [[ "$is_admin" == "true" ]]; then
+    clients_json="$(curl -sS -G "${keycloak_base}/admin/realms/${keycloak_realm}/clients" -H "Authorization: Bearer ${keycloak_token}" --data-urlencode "clientId=realm-management")"
+    realm_mgmt_client_id="$(printf '%s' "$clients_json" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+    if [[ -z "$realm_mgmt_client_id" ]]; then
+      echo "Aviso: nao foi possivel localizar client realm-management para aplicar permissao admin." >&2
+    else
+      role_json="$(keycloak_request "GET" "${keycloak_base}/admin/realms/${keycloak_realm}/clients/${realm_mgmt_client_id}/roles/realm-admin" "$keycloak_token")"
+      status="$(keycloak_request_status "POST" "${keycloak_base}/admin/realms/${keycloak_realm}/users/${user_id}/role-mappings/clients/${realm_mgmt_client_id}" "$keycloak_token" "[${role_json}]")"
+      if [[ "$status" != "204" ]]; then
+        echo "Aviso: falha ao aplicar permissao de administrador (HTTP ${status})." >&2
+      fi
+    fi
+  fi
+
+  echo "Usuario inicial '${username}' configurado com sucesso."
+}
+
 upsert_env_var() {
   local env_file="$1"
   local key="$2"
@@ -152,6 +345,12 @@ TUNNEL_HOSTNAME=""
 TUNNEL_PUBLIC_URL=""
 SKIP_FRONTEND_PATCH=false
 SKIP_SMOKE=false
+CREATE_INITIAL_USER=false
+INITIAL_USER_NAME=""
+INITIAL_USER_EMAIL=""
+INITIAL_USER_USERNAME=""
+INITIAL_USER_PASSWORD=""
+INITIAL_USER_ADMIN=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -203,6 +402,30 @@ while [[ $# -gt 0 ]]; do
       SKIP_SMOKE=true
       shift
       ;;
+    --create-initial-user)
+      CREATE_INITIAL_USER=true
+      shift
+      ;;
+    --initial-user-name)
+      INITIAL_USER_NAME="${2:-}"
+      shift 2
+      ;;
+    --initial-user-email)
+      INITIAL_USER_EMAIL="${2:-}"
+      shift 2
+      ;;
+    --initial-user-username)
+      INITIAL_USER_USERNAME="${2:-}"
+      shift 2
+      ;;
+    --initial-user-password)
+      INITIAL_USER_PASSWORD="${2:-}"
+      shift 2
+      ;;
+    --initial-user-admin)
+      INITIAL_USER_ADMIN=true
+      shift
+      ;;
     --help)
       usage
       exit 0
@@ -219,6 +442,13 @@ if [[ -z "$REPO_URL" ]]; then
   echo "--repo-url is required." >&2
   usage
   exit 1
+fi
+
+if [[ "$CREATE_INITIAL_USER" == "true" ]]; then
+  if [[ -z "$INITIAL_USER_NAME" || -z "$INITIAL_USER_EMAIL" || -z "$INITIAL_USER_USERNAME" || -z "$INITIAL_USER_PASSWORD" ]]; then
+    echo "Para --create-initial-user, informe nome, email, login e senha." >&2
+    exit 1
+  fi
 fi
 
 FRONTEND_URL="$(normalize_url "$FRONTEND_URL")"
@@ -308,3 +538,7 @@ echo "Running install-agent with args: ${INSTALL_ARGS[*]:-(none)}"
 cd "$AGENT_DIR"
 chmod +x ./install-agent.sh ./smoke-check.sh ./tunnel-self-heal.sh ./tunnel-self-heal-stop.sh
 ./install-agent.sh "${INSTALL_ARGS[@]}"
+
+if [[ "$CREATE_INITIAL_USER" == "true" ]]; then
+  create_initial_keycloak_user "$ENV_FILE" "$INITIAL_USER_NAME" "$INITIAL_USER_EMAIL" "$INITIAL_USER_USERNAME" "$INITIAL_USER_PASSWORD" "$INITIAL_USER_ADMIN"
+fi

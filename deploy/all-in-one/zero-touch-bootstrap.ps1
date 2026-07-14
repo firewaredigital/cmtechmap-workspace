@@ -31,6 +31,25 @@ param(
 
     [Parameter(Mandatory = $false)]
     [switch]$SkipFrontendPatch
+
+    ,
+    [Parameter(Mandatory = $false)]
+    [switch]$CreateInitialUser,
+
+    [Parameter(Mandatory = $false)]
+    [string]$InitialUserName = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$InitialUserEmail = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$InitialUserUsername = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$InitialUserPassword = "",
+
+    [Parameter(Mandatory = $false)]
+    [switch]$InitialUserAdmin
 )
 
 $ErrorActionPreference = "Stop"
@@ -155,6 +174,34 @@ if ($SkipSmoke.IsPresent) {
 
 if ($SkipFrontendPatch.IsPresent) {
     $argsList += "--skip-frontend-patch"
+}
+
+if ($CreateInitialUser.IsPresent) {
+    $argsList += "--create-initial-user"
+}
+
+if (-not [string]::IsNullOrWhiteSpace($InitialUserName)) {
+    $argsList += "--initial-user-name"
+    $argsList += $InitialUserName
+}
+
+if (-not [string]::IsNullOrWhiteSpace($InitialUserEmail)) {
+    $argsList += "--initial-user-email"
+    $argsList += $InitialUserEmail
+}
+
+if (-not [string]::IsNullOrWhiteSpace($InitialUserUsername)) {
+    $argsList += "--initial-user-username"
+    $argsList += $InitialUserUsername
+}
+
+if (-not [string]::IsNullOrWhiteSpace($InitialUserPassword)) {
+    $argsList += "--initial-user-password"
+    $argsList += $InitialUserPassword
+}
+
+if ($InitialUserAdmin.IsPresent) {
+    $argsList += "--initial-user-admin"
 }
 
 $escapedArgs = @()

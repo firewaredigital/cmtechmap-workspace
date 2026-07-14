@@ -105,6 +105,31 @@ Goal: send one file to Windows machine and start local server quickly.
 
 After that, backend stack is running locally and the application can use it.
 
+## Cadastro Inicial Sem Keycloak Manual
+
+O instalador agora pode criar o primeiro usuario automaticamente, sem abrir o painel do Keycloak.
+
+Na tela inicial do instalador:
+
+1. Marque `Criar usuario inicial automaticamente`.
+2. Preencha:
+	- `Nome completo (usuario inicial)`
+	- `Email (usuario inicial)`
+	- `Login (usuario inicial)`
+	- `Senha inicial` (minimo 8 caracteres)
+3. (Opcional) marque `Dar permissao de administrador para este usuario`.
+4. Clique em `Install Now`.
+
+Fluxo automatico feito pelo instalador:
+
+1. Sobe o ambiente completo (backend + Keycloak + banco + servicos auxiliares).
+2. Autentica no Keycloak com credenciais de admin do ambiente.
+3. Cria o usuario informado (ou reutiliza se ja existir).
+4. Define a senha inicial.
+5. Aplica permissao de admin quando selecionado.
+
+Se ocorrer erro, o popup de falha mostra os logs recentes logo abaixo da mensagem para diagnostico rapido.
+
 ## Silent Installation
 
 Inno Setup supports silent switches:

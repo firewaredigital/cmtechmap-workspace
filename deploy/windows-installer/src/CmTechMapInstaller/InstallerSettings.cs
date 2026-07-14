@@ -15,6 +15,12 @@ public sealed class InstallerSettings
     public string TunnelPublicUrl { get; set; } = string.Empty;
     public bool SkipSmoke { get; set; }
     public bool SkipFrontendPatch { get; set; }
+    public bool CreateInitialUser { get; set; }
+    public string InitialUserName { get; set; } = string.Empty;
+    public string InitialUserEmail { get; set; } = string.Empty;
+    public string InitialUserUsername { get; set; } = string.Empty;
+    public string InitialUserPassword { get; set; } = string.Empty;
+    public bool InitialUserAdmin { get; set; }
 
     public static string SettingsDirectory
     {
