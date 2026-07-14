@@ -133,6 +133,12 @@ Fluxo automatico feito pelo instalador:
 4. Define a senha inicial.
 5. Aplica permissao de admin quando selecionado.
 
+Atualizacao sem parar manualmente o backend antigo:
+
+- O instalador faz reconciliacao automatica da stack CM TechMap antes do deploy.
+- Essa reconciliacao usa `docker compose down --remove-orphans` e preserva volumes de dados.
+- Resultado: voce pode rodar o novo instalador direto, sem parar processos manualmente.
+
 Se ocorrer erro, o popup de falha mostra os logs recentes logo abaixo da mensagem para diagnostico rapido.
 
 ## Silent Installation

@@ -30,6 +30,7 @@ Options:
   --frontend-url <url>          Sets APP_CORS_ORIGINS in .env.single.
   --skip-frontend-patch         Do not modify vercel.json.
   --skip-smoke                  Skip smoke checks.
+  --skip-auto-reconcile         Do not auto-stop previous cm-techmap stack before update.
   --help                        Show this help.
 
 Behavior:
@@ -325,6 +326,7 @@ HOST_GATEWAY_PORT=""
 FRONTEND_URL=""
 SKIP_FRONTEND_PATCH=false
 SKIP_SMOKE=false
+SKIP_AUTO_RECONCILE=false
 ENABLE_SELF_HEAL=false
 SELF_HEAL_EXPLICIT_SET=false
 SELF_HEAL_INTERVAL="60"
@@ -386,6 +388,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-smoke)
       SKIP_SMOKE=true
+      shift
+      ;;
+    --skip-auto-reconcile)
+      SKIP_AUTO_RECONCILE=true
       shift
       ;;
     --help)
@@ -476,6 +482,13 @@ if [[ -n "$FRONTEND_URL" ]]; then
 fi
 
 COMPOSE_ARGS=( -f "$COMPOSE_FILE" --env-file "$ENV_FILE" )
+
+if [[ "$SKIP_AUTO_RECONCILE" != "true" ]]; then
+  if docker ps -a --format '{{.Names}}' | grep -Eq '^cm-techmap-'; then
+    echo "Reconciling previous CM TechMap stack (safe stop, keeping data volumes)..."
+    docker compose "${COMPOSE_ARGS[@]}" down --remove-orphans || true
+  fi
+fi
 
 if [[ "$WITH_TUNNEL" == "true" ]]; then
   token_line="$(grep -E '^CLOUDFLARE_TUNNEL_TOKEN=' "$ENV_FILE" || true)"
