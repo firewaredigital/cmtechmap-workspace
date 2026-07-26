@@ -4,17 +4,17 @@ Smart Cities GovTech Platform — Backend API Server
 """
 
 import logging
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app.config import get_settings
 from app.api.v1.router import api_v1_router
-from app.middleware.tenant import TenantMiddleware
+from app.config import get_settings
 from app.middleware.request_logging import RequestLoggingMiddleware
+from app.middleware.tenant import TenantMiddleware
 
 settings = get_settings()
 
@@ -34,6 +34,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info(f"  CM TECHMAP Backend v{settings.app_version}")
     logger.info(f"  Environment: {settings.app_env}")
     logger.info("=" * 60)
+
+    # ── Startup: refuse silently-insecure production configuration ───────
+    if settings.is_production:
+        if settings.app_secret_key.startswith("CHANGE-ME"):
+            logger.critical(
+                "  SECURITY: APP_SECRET_KEY is still the placeholder value in "
+                "PRODUCTION. Generate one (openssl rand -hex 32) and set it now."
+            )
+        if settings.keycloak_client_secret in ("CHANGE-ME-after-keycloak-setup",):
+            logger.critical(
+                "  SECURITY: KEYCLOAK_CLIENT_SECRET is still the placeholder "
+                "value in PRODUCTION — backend↔Keycloak calls will fail."
+            )
+        if settings.app_debug:
+            logger.warning("  APP_DEBUG=true in production — disable it.")
 
     # ── Startup: verify database connection ──────────────────────────────
     try:
@@ -144,6 +159,7 @@ app = FastAPI(
 # ── Middleware (order matters: last added = first executed) ────────────────────
 from app.middleware.metrics import PrometheusMetricsMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
+
 app.add_middleware(PrometheusMetricsMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(RateLimitMiddleware)
@@ -178,6 +194,7 @@ app.include_router(api_v1_router)
 # Mounting directly on `app` ensures the path matches the frontend expectation
 # and the Vite dev-server proxy config (/ws → ws://localhost:8000).
 from app.api.v1.websocket import router as ws_direct_router
+
 app.include_router(ws_direct_router)
 
 
@@ -195,6 +212,7 @@ async def root():
 async def prometheus_metrics():
     """Prometheus-compatible metrics endpoint for scraping."""
     from starlette.responses import PlainTextResponse
+
     from app.middleware.metrics import generate_metrics_text
     return PlainTextResponse(generate_metrics_text(), media_type="text/plain; version=0.0.4")
 

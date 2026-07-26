@@ -170,10 +170,7 @@ class IBGEClient:
         )
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.get(url)
-            if resp.status_code == 200:
-                data = resp.json()
-            else:
-                data = []
+            data = resp.json() if resp.status_code == 200 else []
 
         _set_cached(cache_key, data)
         return data
@@ -240,10 +237,7 @@ class INMETClient:
             resp = await client.get(
                 f"{self.BASE_URL}/estacao/dados/{data_inicio}/{data_fim}/{codigo}"
             )
-            if resp.status_code == 200:
-                data = resp.json()
-            else:
-                data = []
+            data = resp.json() if resp.status_code == 200 else []
 
         result = []
         if isinstance(data, list):
@@ -304,10 +298,7 @@ class CEMADENClient:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             try:
                 resp = await client.get(f"{self.BASE_URL}/listaMunicipios.json")
-                if resp.status_code == 200:
-                    data = resp.json()
-                else:
-                    data = []
+                data = resp.json() if resp.status_code == 200 else []
             except Exception:
                 data = []
 
@@ -328,13 +319,10 @@ class CEMADENClient:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             try:
                 resp = await client.get(
-                    f"http://www2.cemaden.gov.br/wp-content/themes/flavor/getEstados.php",
+                    "http://www2.cemaden.gov.br/wp-content/themes/flavor/getEstados.php",
                     params={"uf": uf.upper()},
                 )
-                if resp.status_code == 200:
-                    data = resp.json()
-                else:
-                    data = []
+                data = resp.json() if resp.status_code == 200 else []
             except Exception:
                 # CEMADEN API may be unavailable — return empty
                 logger.warning(f"CEMADEN API unavailable for UF={uf}")

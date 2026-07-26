@@ -4,8 +4,7 @@ Async report generation with database integration and MinIO storage.
 """
 
 import logging
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from celery import shared_task
 
@@ -68,7 +67,7 @@ def generate_project_report(
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import Session
 
-    logger.info(f"[REPORT] Starting report generation: %s (%s, type=%s)", report_id, output_format, report_type)
+    logger.info("[REPORT] Starting report generation: %s (%s, type=%s)", report_id, output_format, report_type)
 
     engine = create_engine(settings.database_url_sync)
 
@@ -227,8 +226,9 @@ def generate_project_report(
                 extension = "xlsx"
 
             # ── 5. Upload to MinIO ─────────────────────────────────────────
-            from app.core.storage import get_minio_client
             import io
+
+            from app.core.storage import get_minio_client
 
             minio_client = get_minio_client()
             bucket = settings.minio_bucket_reports

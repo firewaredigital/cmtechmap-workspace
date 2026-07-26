@@ -4,14 +4,15 @@ Stores polygons detected by AI models (buildings, pools, vegetation, etc.)
 linked to flight assets (orthomosaics, DSMs).
 """
 
+import uuid
+
 from geoalchemy2 import Geometry
 from sqlalchemy import Float, Index, String
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
-
-import uuid
 
 
 class AIDetection(Base, UUIDPrimaryKeyMixin, TimestampMixin):

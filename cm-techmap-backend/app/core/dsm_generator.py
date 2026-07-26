@@ -51,7 +51,7 @@ def _gradient_magnitude(gray: np.ndarray) -> np.ndarray:
 
 
 def _compute_texture_energy(red, green, blue):
-    from scipy.ndimage import gaussian_filter, uniform_filter, laplace
+    from scipy.ndimage import gaussian_filter, laplace, uniform_filter
 
     gray = 0.299 * red + 0.587 * green + 0.114 * blue
     gy, gx = np.gradient(gray)
@@ -188,10 +188,10 @@ def generate_synthetic_dsm(
         band_count = min(src.count, 3)
 
         # For large images, downsample to max 4096px to avoid OOM
-        MAX_DIM = 4096
+        max_dim = 4096
         scale_factor = 1.0
-        if max(width, height) > MAX_DIM:
-            scale_factor = MAX_DIM / max(width, height)
+        if max(width, height) > max_dim:
+            scale_factor = max_dim / max(width, height)
             out_shape = (int(height * scale_factor), int(width * scale_factor))
             logger.info(f"[DSM] Downsampling {width}x{height} → {out_shape[1]}x{out_shape[0]} (factor={scale_factor:.3f})")
             from rasterio.enums import Resampling

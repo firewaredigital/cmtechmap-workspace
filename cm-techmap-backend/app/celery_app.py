@@ -42,6 +42,7 @@ celery_app.conf.update(
         "app.tasks.post_processing.convert_orthomosaic_to_cog": {"queue": "processing"},
         "app.tasks.post_processing.generate_dsm_and_buildings": {"queue": "processing"},
         "app.tasks.post_processing.extract_buildings_from_real_dsm": {"queue": "processing"},
+        "app.tasks.post_processing.normalize_and_process_real_dsm": {"queue": "processing"},
         "app.tasks.post_processing.extract_and_store_metadata": {"queue": "default"},
         "app.tasks.post_processing.generate_thumbnail": {"queue": "default"},
         "app.tasks.report_tasks.generate_project_report": {"queue": "reports"},

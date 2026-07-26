@@ -5,11 +5,20 @@ Ensures report config presets are exposed and stable for frontend consumption.
 
 import pytest
 
+from tests.conftest import mock_auth
+
 
 class TestReportConfigPresetsEndpoint:
     @pytest.mark.asyncio
-    async def test_list_presets_contract(self, client):
+    async def test_list_presets_requires_auth(self, client):
+        """Presets endpoint is authenticated (viewer or above)."""
         response = await client.get("/api/v1/reports/config/presets")
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_list_presets_contract(self, client, viewer_user):
+        with mock_auth(viewer_user):
+            response = await client.get("/api/v1/reports/config/presets")
         assert response.status_code == 200
 
         data = response.json()
@@ -27,8 +36,9 @@ class TestReportConfigPresetsEndpoint:
         assert "qa_threshold" in first
 
     @pytest.mark.asyncio
-    async def test_profiles_include_advanced_types(self, client):
-        response = await client.get("/api/v1/reports/config/presets")
+    async def test_profiles_include_advanced_types(self, client, viewer_user):
+        with mock_auth(viewer_user):
+            response = await client.get("/api/v1/reports/config/presets")
         assert response.status_code == 200
         profiles = response.json().get("supported_profiles", [])
 

@@ -8,7 +8,6 @@ import os
 import shutil
 import tempfile
 import uuid
-from io import BytesIO
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -18,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.storage import upload_file as minio_upload
 from app.dependencies import get_db, require_operador
+from app.middleware.subscription_enforcement import enforce_storage_limit
 
 router = APIRouter(prefix="/assets", tags=["Assets"])
 settings = get_settings()
@@ -26,7 +26,11 @@ logger = logging.getLogger(__name__)
 ALLOWED_EXTENSIONS = {".tif", ".tiff", ".geotiff"}
 
 
-@router.post("/upload-geotiff", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/upload-geotiff",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(enforce_storage_limit)],
+)
 async def upload_geotiff(
     file: UploadFile = File(...),
     project_id: str = Form(...),

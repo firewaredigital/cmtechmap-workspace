@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -22,15 +23,17 @@ class ProjectUpdate(BaseModel):
 
 class ProjectRead(BaseModel):
     id: uuid.UUID
-    code: str
+    # Tolerant of legacy rows created before code generation was enforced
+    # (init-script-provisioned databases allowed NULL codes).
+    code: str | None = None
     name: str
     description: str | None
     status: str
     city: str | None
     state: str | None
     area_sqm: float | None
-    flight_count: int
-    image_count: int
+    flight_count: int = 0
+    image_count: int = 0
     created_at: datetime
     updated_at: datetime
 

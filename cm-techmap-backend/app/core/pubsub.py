@@ -4,9 +4,11 @@ Bridges Celery workers and FastAPI WebSocket endpoints.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 import redis.asyncio as aioredis
 
@@ -161,15 +163,11 @@ async def subscribe_progress(task_id: str) -> AsyncIterator[dict[str, Any]]:
         logger.error(f"[PubSub] Unexpected error for task {task_id}: {e}")
     finally:
         if pubsub:
-            try:
+            with contextlib.suppress(Exception):
                 await pubsub.unsubscribe(channel)
-            except Exception:
-                pass
         if r:
-            try:
+            with contextlib.suppress(Exception):
                 await r.aclose()
-            except Exception:
-                pass
 
 
 async def get_last_progress(task_id: str) -> dict[str, Any] | None:
@@ -185,7 +183,5 @@ async def get_last_progress(task_id: str) -> dict[str, Any] | None:
         logger.warning(f"[PubSub] Error fetching last progress for {task_id}: {e}")
         return None
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await r.aclose()
-        except Exception:
-            pass

@@ -4,29 +4,42 @@ Pytest fixtures, tenant factory, and shared test infrastructure.
 Supports both unit tests (mock DB) and integration tests (real DB via Docker).
 """
 
-import asyncio
 import uuid
-from typing import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.main import app
 from app.config import get_settings
+from app.main import app
+
+# NOTE: no custom session-scoped `event_loop` fixture here. pytest-asyncio
+# (asyncio_mode=auto) creates one loop per test, which is precisely what
+# prevents the "event loop contamination" failures the old override caused.
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Event Loop
-# ══════════════════════════════════════════════════════════════════════════════
+@pytest_asyncio.fixture(autouse=True)
+async def _isolate_global_state():
+    """
+    Keep tests independent of each other:
 
-@pytest.fixture(scope="session")
-def event_loop() -> Generator:
-    """Create an event loop for the entire test session."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+    - Dispose the SQLAlchemy async engine after every test. Pooled asyncpg
+      connections are bound to the event loop that created them; reusing
+      them from the next test's fresh loop raises RuntimeError.
+    - Clear the in-memory rate limiter window, otherwise a burst test
+      (test_rate_limit_login) throttles every login test that runs after it
+      within the same minute.
+    """
+    from app.middleware import rate_limit
+
+    rate_limit._request_log.clear()
+    yield
+    rate_limit._request_log.clear()
+    from app.core.database import engine
+
+    await engine.dispose()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -240,8 +253,12 @@ def mock_auth(user_payload: dict):
     Usage:
         with mock_auth(super_admin_user):
             response = await client.get("/api/v1/admin/tenants")
+
+    Patches the name bound inside app.dependencies (imported there at module
+    load — patching app.core.security would have no effect), with an
+    AsyncMock so the awaited call resolves to the payload.
     """
     return patch(
-        "app.core.security.get_current_user_from_request",
-        return_value=user_payload,
+        "app.dependencies.get_current_user_from_request",
+        new=AsyncMock(return_value=user_payload),
     )

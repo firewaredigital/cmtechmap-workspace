@@ -2,27 +2,27 @@
 
 from fastapi import APIRouter
 
-from app.api.v1.health import router as health_router
-from app.api.v1.auth import router as auth_router
-from app.api.v1.users import router as users_router
-from app.api.v1.projects import router as projects_router
-from app.api.v1.uploads import router as uploads_router
 from app.api.v1.admin import router as admin_router
-from app.api.v1.flights import router as flights_router
-from app.api.v1.tiles import router as tiles_router
-from app.api.v1.websocket import router as websocket_router
-from app.api.v1.reports import router as reports_router
-from app.api.v1.public_data import router as public_data_router
-from app.api.v1.dashboard import router as dashboard_router
 from app.api.v1.assets import router as assets_router
-from app.api.v1.subscriptions import router as subscriptions_router
-from app.api.v1.notifications import router as notifications_router
-from app.api.v1.urban_analytics import router as urban_analytics_router
+from app.api.v1.auth import router as auth_router
+from app.api.v1.dashboard import router as dashboard_router
 from app.api.v1.discrepancies import router as discrepancies_router
-from app.api.v1.iptu_rules import router as iptu_rules_router
-from app.api.v1.public_map import router as public_map_router
+from app.api.v1.flights import router as flights_router
+from app.api.v1.health import router as health_router
 from app.api.v1.integration import router as integration_router
+from app.api.v1.iptu_rules import router as iptu_rules_router
 from app.api.v1.models import router as models_router
+from app.api.v1.notifications import router as notifications_router
+from app.api.v1.projects import router as projects_router
+from app.api.v1.public_data import router as public_data_router
+from app.api.v1.public_map import router as public_map_router
+from app.api.v1.reports import router as reports_router
+from app.api.v1.subscriptions import router as subscriptions_router
+from app.api.v1.tiles import router as tiles_router
+from app.api.v1.uploads import router as uploads_router
+from app.api.v1.urban_analytics import router as urban_analytics_router
+from app.api.v1.users import router as users_router
+from app.api.v1.websocket import router as websocket_router
 
 api_v1_router = APIRouter(prefix="/api/v1")
 

@@ -17,8 +17,8 @@ import numpy as np
 import rasterio
 from pyproj import Geod
 from rasterio.features import rasterize, shapes
-from scipy.ndimage import binary_closing, binary_opening, binary_fill_holes
-from shapely.geometry import shape, Polygon, MultiPolygon, mapping
+from scipy.ndimage import binary_closing, binary_fill_holes, binary_opening
+from shapely.geometry import MultiPolygon, Polygon, mapping, shape
 from shapely.ops import unary_union
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,7 @@ def _load_building_polygons(buildings_geojson_path: str | Path | None) -> list[P
     if not path.exists():
         return []
 
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
 
     polygons: list[Polygon] = []

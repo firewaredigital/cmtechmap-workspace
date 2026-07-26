@@ -49,7 +49,12 @@ data "oci_core_images" "ubuntu_arm" {
 locals {
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
   image_id            = var.os_image_id != "" ? var.os_image_id : data.oci_core_images.ubuntu_arm.images[0].id
-  cloud_init_content  = file("${path.module}/cloud-init.yaml")
+  # templatefile (NOT file): cloud-init.yaml interpolates ${ssh_public_key};
+  # plain file() would write the literal string as the authorized key and the
+  # `deploy` user could never log in.
+  cloud_init_content = templatefile("${path.module}/cloud-init.yaml", {
+    ssh_public_key = var.ssh_public_key
+  })
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -234,7 +239,9 @@ resource "oci_core_volume" "cm_techmap_data" {
   freeform_tags       = var.freeform_tags
 
   # Usamos o VPU padrão (0-10, free tier usa balanced = 10)
-  vpus_per_gb = 10
+  # Always Free block volumes are limited to VPU 0 ("Lower Cost").
+  # VPU 10 (Balanced) on 150 GB is BILLABLE — keep 0 to stay free.
+  vpus_per_gb = 0
 }
 
 # ── Attach do Block Volume à VM ──────────────────────────────────────────────

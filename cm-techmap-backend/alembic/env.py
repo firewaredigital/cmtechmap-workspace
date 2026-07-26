@@ -3,12 +3,10 @@ CM TECHMAP — Alembic Environment Configuration
 Async-compatible migration runner with PostGIS and multi-schema support.
 """
 
-import asyncio
 from logging.config import fileConfig
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 
@@ -87,33 +85,6 @@ def do_run_migrations(connection: Connection) -> None:
 
     with context.begin_transaction():
         context.run_migrations()
-
-
-async def run_async_migrations() -> None:
-    """
-    Run migrations using async engine.
-    We create a sync-compatible URL for Alembic.
-    """
-    url = get_url()
-    # Alembic needs a sync driver — use psycopg2
-    configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = url
-
-    connectable = async_engine_from_config(
-        configuration,
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-        # Override to use sync driver
-    )
-
-    # Since we're using psycopg2 URL, use sync approach
-    from sqlalchemy import create_engine
-    sync_engine = create_engine(url, poolclass=pool.NullPool)
-
-    with sync_engine.connect() as connection:
-        do_run_migrations(connection)
-
-    sync_engine.dispose()
 
 
 def run_migrations_online() -> None:

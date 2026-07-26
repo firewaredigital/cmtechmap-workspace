@@ -8,11 +8,11 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db, get_current_user, require_gestor, require_operador
+from app.dependencies import get_db, require_gestor, require_operador
 
 logger = logging.getLogger("cm_techmap.api.urban")
 
@@ -570,7 +570,9 @@ async def analyze_slope_risk(
     """
     import tempfile
     from pathlib import Path
+
     from minio import Minio
+
     from app.config import get_settings
     from app.services.disaster_prevention import DisasterPreventionService
 
@@ -610,7 +612,9 @@ async def analyze_flood_risk(
     """
     import tempfile
     from pathlib import Path
+
     from minio import Minio
+
     from app.config import get_settings
     from app.services.disaster_prevention import DisasterPreventionService
 
@@ -657,7 +661,9 @@ async def detect_dengue_water(
     """
     import tempfile
     from pathlib import Path
+
     from minio import Minio
+
     from app.config import get_settings
     from app.services.dengue_detection import DengueHotspotService
 
@@ -695,7 +701,9 @@ async def detect_dengue_depressions(
     """
     import tempfile
     from pathlib import Path
+
     from minio import Minio
+
     from app.config import get_settings
     from app.services.dengue_detection import DengueHotspotService
 
@@ -740,7 +748,9 @@ async def compare_dsm_epochs(
     """
     import tempfile
     from pathlib import Path
+
     from minio import Minio
+
     from app.config import get_settings
     from app.services.temporal_comparison import TemporalComparisonService
 
@@ -783,7 +793,9 @@ async def compare_vegetation_epochs(
     """
     import tempfile
     from pathlib import Path
+
     from minio import Minio
+
     from app.config import get_settings
     from app.services.temporal_comparison import TemporalComparisonService
 

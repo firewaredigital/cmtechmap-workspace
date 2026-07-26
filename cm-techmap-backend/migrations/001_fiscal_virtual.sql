@@ -197,24 +197,30 @@ CREATE TABLE IF NOT EXISTS public.measurements (
 );
 
 -- ============================================================================
--- 8. NOTIFICATIONS (ensure exists)
+-- 8. NOTIFICATIONS (ensure exists — canonical shape, matches Alembic 003)
+-- user_id holds the Keycloak sub or e-mail (string), NOT a UUID.
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS public.notifications (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         UUID NOT NULL,
-    title           VARCHAR(300) NOT NULL,
-    message         TEXT,
-    type            VARCHAR(50) DEFAULT 'info',
-    category        VARCHAR(50),
+    user_id         VARCHAR(320) NOT NULL,
+    title           VARCHAR(200) NOT NULL,
+    message         TEXT NOT NULL,
+    type            VARCHAR(20) NOT NULL DEFAULT 'info',
+    category        VARCHAR(50) NOT NULL DEFAULT 'system',
     link            VARCHAR(500),
+    entity_type     VARCHAR(100),
+    entity_id       VARCHAR(255),
     is_read         BOOLEAN DEFAULT FALSE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS ix_notifications_user_id ON public.notifications(user_id);
+CREATE INDEX IF NOT EXISTS ix_notifications_user_unread ON public.notifications(user_id, is_read);
+CREATE INDEX IF NOT EXISTS ix_notifications_created_at ON public.notifications(created_at);
+CREATE INDEX IF NOT EXISTS ix_notifications_category ON public.notifications(category);
 
 -- ============================================================================
--- 9. REPORTS (ensure exists)
+-- 9. REPORTS (ensure exists — canonical shape, matches Alembic 001)
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS public.reports (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -222,27 +228,32 @@ CREATE TABLE IF NOT EXISTS public.reports (
     title           VARCHAR(500) NOT NULL,
     report_type     VARCHAR(50) NOT NULL DEFAULT 'general',
     status          VARCHAR(30) NOT NULL DEFAULT 'pending',
-    format          VARCHAR(20) DEFAULT 'pdf',
-    parameters      JSONB DEFAULT '{}',
-    file_path       VARCHAR(1000),
+    output_format   VARCHAR(20) DEFAULT 'pdf',
+    config          JSONB DEFAULT '{}',
+    file_key        VARCHAR(2048),
     file_size_bytes BIGINT,
-    generated_by    VARCHAR(320),
-    generated_at    TIMESTAMPTZ,
+    requested_by    VARCHAR(320),
+    celery_task_id  VARCHAR(255),
     error_message   TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS ix_reports_project_id ON public.reports(project_id);
+CREATE INDEX IF NOT EXISTS ix_reports_status ON public.reports(status);
 
 CREATE TABLE IF NOT EXISTS public.report_sections (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     report_id       UUID NOT NULL REFERENCES public.reports(id) ON DELETE CASCADE,
     title           VARCHAR(300),
     content         TEXT,
-    section_order   INTEGER DEFAULT 0,
+    "order"         INTEGER DEFAULT 0,
     section_type    VARCHAR(50) DEFAULT 'text',
     data            JSONB DEFAULT '{}',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS ix_report_sections_report_id ON public.report_sections(report_id);
 
 -- ============================================================================
 -- DONE

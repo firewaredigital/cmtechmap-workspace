@@ -4,12 +4,12 @@ Keycloak JWT validation, JWKS caching, and role-based access control.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 from fastapi import HTTPException, Request, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPBearer
 from jose import JWTError, jwt
 from jose.backends import RSAKey
 
@@ -34,7 +34,7 @@ async def _get_keycloak_jwks() -> dict[str, Any]:
     """
     global _jwks_cache, _jwks_cache_time
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if _jwks_cache and _jwks_cache_time and (now - _jwks_cache_time).seconds < _JWKS_CACHE_TTL_SECONDS:
         return _jwks_cache
 
@@ -68,6 +68,28 @@ def _find_rsa_key(jwks: dict[str, Any], kid: str) -> dict[str, Any] | None:
         if key.get("kid") == kid and key.get("kty") == "RSA":
             return key
     return None
+
+
+def _accepted_issuers() -> set[str]:
+    """
+    Every issuer URL this deployment legitimately produces.
+
+    Keycloak derives the `iss` claim from the URL used to reach it (unless a
+    fixed KC_HOSTNAME is configured). The backend obtains tokens over the
+    internal Docker network (http://keycloak:8080) while browsers use the
+    public URL, so a single expected issuer rejects perfectly valid tokens —
+    which is exactly what broke every authenticated request on the OCI VM.
+
+    Trusting both is safe: the signature is still verified against the realm's
+    JWKS, so only the realm's own signing key can mint an accepted token.
+    """
+    realm = settings.keycloak_realm
+    bases = {
+        settings.keycloak_server_url,
+        settings.keycloak_external_url,
+        *settings.keycloak_extra_issuers_list,
+    }
+    return {f"{b.rstrip('/')}/realms/{realm}" for b in bases if b}
 
 
 async def decode_jwt_token(token: str) -> dict[str, Any]:
@@ -112,18 +134,26 @@ async def decode_jwt_token(token: str) -> dict[str, Any]:
         # Keycloak tokens may have aud="account" instead of the client_id, depending
         # on the realm configuration. The authorized party (azp) claim always matches
         # the client_id, so we use that as the primary validation.
-        issuer = f"{settings.keycloak_external_url}/realms/{settings.keycloak_realm}"
         payload: dict[str, Any] = jwt.decode(
             token,
             rsa_key.to_dict(),
             algorithms=["RS256"],
-            issuer=issuer,
             options={
                 "verify_aud": False,  # We verify manually below
-                "verify_iss": True,
+                "verify_iss": False,  # Checked against the accepted set below
                 "verify_exp": True,
             },
         )
+
+        # Issuer must be one this deployment actually produces (see docstring)
+        accepted = _accepted_issuers()
+        token_iss = payload.get("iss", "")
+        if token_iss not in accepted:
+            logger.warning(f"Token issuer rejected: {token_iss} (accepted: {sorted(accepted)})")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token issuer",
+            )
 
         # Manual audience/azp validation
         token_aud = payload.get("aud", "")

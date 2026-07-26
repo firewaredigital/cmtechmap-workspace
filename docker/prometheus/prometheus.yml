@@ -41,14 +41,12 @@ scrape_configs:
           component: api
 
   # ── Nginx ───────────────────────────────────────────────────────────────────
-  - job_name: "nginx"
-    metrics_path: "/nginx-health"
-    scrape_interval: 30s
-    static_configs:
-      - targets: ["nginx:80"]
-        labels:
-          service: nginx
-          component: gateway
+  # Note: /nginx-health returns plain text "OK", NOT Prometheus exposition
+  # format — scraping it only produces parse errors. Add nginx-prometheus-
+  # exporter as a sidecar before re-enabling this job.
+  # - job_name: "nginx"
+  #   static_configs:
+  #     - targets: ["nginx-exporter:9113"]
 
   # ── Redis ───────────────────────────────────────────────────────────────────
   # Note: Requires redis_exporter sidecar (optional future addition)
@@ -63,11 +61,12 @@ scrape_configs:
   #     - targets: ["postgres-exporter:9187"]
 
   # ── Keycloak ────────────────────────────────────────────────────────────────
+  # Keycloak 25+ exposes /metrics on the MANAGEMENT port (9000), not 8080.
   - job_name: "keycloak"
     metrics_path: "/metrics"
     scrape_interval: 30s
     static_configs:
-      - targets: ["keycloak:8080"]
+      - targets: ["keycloak:9000"]
         labels:
           service: keycloak
           component: auth

@@ -5,7 +5,6 @@ Generates PDF (via WeasyPrint) and Excel (via openpyxl) reports.
 
 import io
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -37,8 +36,8 @@ class ReportGeneratorService:
         Returns raw PDF bytes.
         """
         try:
-            from weasyprint import HTML
             from jinja2 import Environment, FileSystemLoader
+            from weasyprint import HTML
         except ImportError:
             logger.warning("WeasyPrint/Jinja2 not available — generating placeholder PDF")
             return self._generate_placeholder_pdf(project_data)
@@ -381,7 +380,7 @@ class ReportGeneratorService:
         """
         try:
             from openpyxl import Workbook
-            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
             from openpyxl.utils import get_column_letter
         except ImportError:
             logger.warning("openpyxl not available — generating placeholder")

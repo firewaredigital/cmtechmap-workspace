@@ -27,10 +27,13 @@ packages:
   - tree
 
 # ── Criar usuário deploy ─────────────────────────────────────────────────────
+# NOTA: o grupo "docker" ainda não existe neste ponto (Docker é instalado em
+# runcmd) — colocá-lo aqui fazia o módulo de usuários do cloud-init falhar.
+# O `usermod -aG docker deploy` em runcmd cobre isso após a instalação.
 users:
   - default
   - name: deploy
-    groups: [docker, sudo]
+    groups: [sudo]
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: true

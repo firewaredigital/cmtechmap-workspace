@@ -5,7 +5,7 @@ Handles the full lifecycle: create → migrate → activate → deactivate → a
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +15,7 @@ logger = logging.getLogger("cm_techmap.tenant_lifecycle")
 # ══════════════════════════════════════════════════════════════════════════════
 # SCHEMA VERSION — increment when adding new tables/columns
 # ══════════════════════════════════════════════════════════════════════════════
-SCHEMA_VERSION = 5  # Current version of tenant schema definition
+SCHEMA_VERSION = 6  # Current version of tenant schema definition
 
 # All tables that must exist in each tenant schema
 TENANT_TABLE_REGISTRY = [
@@ -23,7 +23,7 @@ TENANT_TABLE_REGISTRY = [
     "flight_assets", "ai_detections", "parcels", "measurements",
     "reports", "activity_logs",
     # Sprint 1 additions:
-    "discrepancies", "analysis_runs", "iptu_rules",
+    "discrepancies", "analysis_runs", "iptu_rule_sets", "iptu_rules",
 ]
 
 
@@ -45,7 +45,7 @@ async def provision_tenant(
     """
     schema = f"tenant_{slug}"
     logger.info(f"[PROVISION] Starting provisioning for: {schema}")
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
     report = {"schema": schema, "tables_created": [], "indexes_created": [], "rls_enabled": []}
 
     # ── Step 1: Create schema ─────────────────────────────────────────────
@@ -80,7 +80,7 @@ async def provision_tenant(
 
     await session.commit()
 
-    elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+    elapsed = (datetime.now(UTC) - start).total_seconds()
     report["elapsed_seconds"] = round(elapsed, 2)
     report["schema_version"] = SCHEMA_VERSION
     logger.info(f"[PROVISION] Complete: {schema} ({len(tables)} tables, {elapsed:.1f}s)")
@@ -95,7 +95,11 @@ async def migrate_tenant_schema(session: AsyncSession, slug: str) -> dict:
     schema = f"tenant_{slug}"
     logger.info(f"[MIGRATE] Starting migration for: {schema}")
 
-    # Check current version
+    # Check current version.
+    # A missing _schema_metadata table (never-provisioned or partially
+    # provisioned tenant) makes this SELECT fail, which ABORTS the Postgres
+    # transaction — every following statement would then die with
+    # InFailedSQLTransactionError. Roll back before continuing.
     current_ver = 0
     try:
         result = await session.execute(text(
@@ -103,11 +107,16 @@ async def migrate_tenant_schema(session: AsyncSession, slug: str) -> dict:
         ))
         row = result.scalar()
         current_ver = int(row) if row else 0
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.info(f"[MIGRATE] No schema version for {schema} ({exc.__class__.__name__}); treating as v0")
+        await session.rollback()
 
     if current_ver >= SCHEMA_VERSION:
         return {"schema": schema, "status": "up_to_date", "version": current_ver}
+
+    # The schema itself may not exist yet (tenant row created without
+    # provisioning) — CREATE TABLE would fail on a missing schema.
+    await session.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
 
     # Apply missing tables idempotently
     tables = await _create_all_tenant_tables(session, schema)
@@ -124,7 +133,7 @@ async def migrate_tenant_schema(session: AsyncSession, slug: str) -> dict:
         INSERT INTO "{schema}"._schema_metadata (key, value)
         VALUES ('schema_version', :ver), ('last_migration', :ts)
         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-    """), {"ver": str(SCHEMA_VERSION), "ts": datetime.now(timezone.utc).isoformat()})
+    """), {"ver": str(SCHEMA_VERSION), "ts": datetime.now(UTC).isoformat()})
 
     await session.commit()
 
@@ -135,6 +144,7 @@ async def migrate_tenant_schema(session: AsyncSession, slug: str) -> dict:
         "to_version": SCHEMA_VERSION,
         "tables_synced": tables,
         "indexes_synced": indexes,
+        "rls_synced": rls,
     }
 
 
@@ -152,6 +162,9 @@ async def migrate_all_tenants(session: AsyncSession) -> list[dict]:
         except Exception as e:
             reports.append({"schema": f"tenant_{slug}", "status": "error", "error": str(e)})
             logger.error(f"[MIGRATE] Failed for tenant_{slug}: {e}")
+            # Clear the aborted transaction so one broken tenant does not
+            # cascade into failures for every tenant that follows it.
+            await session.rollback()
     return reports
 
 
@@ -196,7 +209,7 @@ async def get_tenant_stats(session: AsyncSession, slug: str) -> dict:
 
     # Storage usage
     try:
-        result = await session.execute(text(f"""
+        result = await session.execute(text("""
             SELECT pg_size_pretty(
                 sum(pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(tablename)))
             )
@@ -518,22 +531,60 @@ async def _create_all_tenant_tables(session: AsyncSession, schema: str) -> list[
     """))
     created.append("analysis_runs")
 
-    # ── iptu_rules (Sprint 1) ─────────────────────────────────────────────
+    # ── iptu_rule_sets + iptu_rules (canonical, schema v6) ────────────────
+    # Earlier versions created a tenant iptu_rules with a completely different
+    # column set (municipality_code/year/base_rate_per_sqm/...). Because the
+    # session search_path is "tenant, public", that table shadowed the public
+    # one and broke every /iptu/rules endpoint for tenant users. The legacy
+    # table was unusable by the API (all queries failed), so it is safe to
+    # drop it and recreate with the canonical shape.
+    await session.execute(text(f"""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = '{schema}' AND table_name = 'iptu_rules'
+                  AND column_name = 'base_rate_per_sqm'
+            ) THEN
+                DROP TABLE "{schema}".iptu_rules;
+            END IF;
+        END;
+        $$
+    """))
+
+    await session.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS "{schema}".iptu_rule_sets (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            municipality_name VARCHAR(200) NOT NULL,
+            municipality_code VARCHAR(10) NOT NULL UNIQUE,
+            state VARCHAR(2) NOT NULL,
+            is_active BOOLEAN DEFAULT TRUE,
+            base_year INTEGER NOT NULL,
+            default_land_value_per_sqm DOUBLE PRECISION DEFAULT 50.0,
+            default_built_value_per_sqm DOUBLE PRECISION DEFAULT 800.0,
+            default_aliquot_pct DOUBLE PRECISION DEFAULT 1.0,
+            pool_surcharge_pct DOUBLE PRECISION DEFAULT 20.0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """))
+    created.append("iptu_rule_sets")
+
     await session.execute(text(f"""
         CREATE TABLE IF NOT EXISTS "{schema}".iptu_rules (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            municipality_code VARCHAR(20),
-            municipality_name VARCHAR(255),
-            year INTEGER NOT NULL,
-            base_rate_per_sqm DOUBLE PRECISION DEFAULT 0,
-            built_rate_per_sqm DOUBLE PRECISION DEFAULT 0,
-            zone_name VARCHAR(100),
-            zone_aliquot DOUBLE PRECISION DEFAULT 1.0,
-            depreciation_rate DOUBLE PRECISION DEFAULT 0,
-            is_active BOOLEAN DEFAULT true,
-            properties JSONB DEFAULT '{{}}',
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW()
+            rule_set_id UUID NOT NULL REFERENCES "{schema}".iptu_rule_sets(id) ON DELETE CASCADE,
+            zone_name VARCHAR(100) NOT NULL,
+            land_value_per_sqm_brl DOUBLE PRECISION NOT NULL,
+            built_value_per_sqm_brl DOUBLE PRECISION NOT NULL,
+            aliquot_pct DOUBLE PRECISION NOT NULL,
+            depreciation_rate_per_year DOUBLE PRECISION DEFAULT 0.01,
+            min_area_sqm DOUBLE PRECISION DEFAULT 0.0,
+            max_depreciation_pct DOUBLE PRECISION DEFAULT 50.0,
+            exemption_rules JSONB DEFAULT '{{}}',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(rule_set_id, zone_name)
         )
     """))
     created.append("iptu_rules")

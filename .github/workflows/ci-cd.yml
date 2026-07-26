@@ -100,7 +100,8 @@ jobs:
       - name: Run tests
         run: |
           pip install pytest pytest-asyncio pytest-cov httpx
-          pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing || echo "No tests found — skipping"
+          # No `|| echo` mask: failing tests MUST fail the pipeline.
+          pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage
         if: always()
@@ -233,10 +234,14 @@ jobs:
           username: ${{ secrets.STAGING_USER }}
           key: ${{ secrets.STAGING_SSH_KEY }}
           script: |
+            set -euo pipefail
             cd /opt/cm-techmap
-            docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
-            docker compose -f docker-compose.prod.yml exec -T backend alembic upgrade head || true
+            # The compose file has build: contexts (no image: keys) — `pull`
+            # alone deploys NOTHING new. Sync the source, then rebuild.
+            git fetch origin && git reset --hard origin/staging
+            docker compose -f docker-compose.prod.yml --env-file .env.production build --parallel
+            docker compose -f docker-compose.prod.yml --env-file .env.production up -d --remove-orphans
+            docker compose -f docker-compose.prod.yml --env-file .env.production exec -T backend alembic upgrade head
             echo "Deployed: ${{ github.sha }}"
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -256,8 +261,12 @@ jobs:
           username: ${{ secrets.PROD_USER }}
           key: ${{ secrets.PROD_SSH_KEY }}
           script: |
+            set -euo pipefail
             cd /opt/cm-techmap
-            docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
-            docker compose -f docker-compose.prod.yml exec -T backend alembic upgrade head || true
+            # The compose file has build: contexts (no image: keys) — `pull`
+            # alone deploys NOTHING new. Sync the source, then rebuild.
+            git fetch origin && git reset --hard origin/main
+            docker compose -f docker-compose.prod.yml --env-file .env.production build --parallel
+            docker compose -f docker-compose.prod.yml --env-file .env.production up -d --remove-orphans
+            docker compose -f docker-compose.prod.yml --env-file .env.production exec -T backend alembic upgrade head
             echo "Production deployed: ${{ github.sha }}"

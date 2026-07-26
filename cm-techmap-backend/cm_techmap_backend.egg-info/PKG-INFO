@@ -1,0 +1,48 @@
+Metadata-Version: 2.4
+Name: cm-techmap-backend
+Version: 0.1.0
+Summary: CM TECHMAP — Smart Cities GovTech Platform Backend
+Author-email: FIREWARE Labs <dev@fireware.com.br>
+License: Proprietary
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.32.0
+Requires-Dist: gunicorn>=23.0.0
+Requires-Dist: python-multipart>=0.0.12
+Requires-Dist: pydantic>=2.10.0
+Requires-Dist: pydantic-settings>=2.6.0
+Requires-Dist: sqlalchemy[asyncio]>=2.0.36
+Requires-Dist: asyncpg>=0.30.0
+Requires-Dist: psycopg2-binary>=2.9.10
+Requires-Dist: geoalchemy2>=0.15.0
+Requires-Dist: alembic>=1.14.0
+Requires-Dist: celery[redis]>=5.4.0
+Requires-Dist: redis>=5.2.0
+Requires-Dist: flower>=2.0.0
+Requires-Dist: minio>=7.2.0
+Requires-Dist: python-jose[cryptography]>=3.3.0
+Requires-Dist: passlib[bcrypt]>=1.7.4
+Requires-Dist: httpx>=0.28.0
+Requires-Dist: groq>=0.11.0
+Requires-Dist: rasterio>=1.4.0
+Requires-Dist: rio-cogeo>=5.4.0
+Requires-Dist: pyproj>=3.7.0
+Requires-Dist: shapely>=2.0.0
+Requires-Dist: numpy>=1.26.0
+Requires-Dist: scipy>=1.14.0
+Requires-Dist: laspy[lazrs]>=2.5.0
+Requires-Dist: trimesh[easy]>=4.5.0
+Requires-Dist: websockets>=14.0
+Requires-Dist: weasyprint>=62.0
+Requires-Dist: openpyxl>=3.1.0
+Requires-Dist: jinja2>=3.1.0
+Requires-Dist: orjson>=3.10.0
+Requires-Dist: python-dateutil>=2.9.0
+Requires-Dist: aiofiles>=24.1.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
+Requires-Dist: httpx>=0.28.0; extra == "dev"
+Requires-Dist: ruff>=0.8.0; extra == "dev"
+Requires-Dist: mypy>=1.13.0; extra == "dev"

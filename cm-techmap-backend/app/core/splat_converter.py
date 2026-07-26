@@ -35,9 +35,8 @@ This module handles:
 
 import logging
 import math
-import os
 import struct
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -560,14 +559,14 @@ def _convert_las_to_splat(
         color_b = np.full(n, 180, dtype=np.uint8)
 
     # ── KNN-based scale + PCA-based rotation + density opacity ────────
-    K = 8  # Number of nearest neighbors
-    logger.info(f"[SPLAT] Computing KNN (K={K}) for {n:,} points...")
+    knn_k = 8  # Number of nearest neighbors
+    logger.info(f"[SPLAT] Computing KNN (K={knn_k}) for {n:,} points...")
 
     # Use scipy KDTree for efficient spatial queries
     try:
         from scipy.spatial import cKDTree
         tree = cKDTree(positions_f32)
-        distances, indices = tree.query(positions_f32, k=K + 1)
+        distances, indices = tree.query(positions_f32, k=knn_k + 1)
         # Exclude self (distance 0) — columns 1..K
         knn_distances = distances[:, 1:]  # shape (n, K)
         knn_indices = indices[:, 1:]      # shape (n, K)
@@ -623,9 +622,9 @@ def _convert_las_to_splat(
         quat_k = np.full(n, 128, dtype=np.uint8)
 
         # Process in batches for memory efficiency
-        BATCH = 50000
-        for batch_start in range(0, n, BATCH):
-            batch_end = min(batch_start + BATCH, n)
+        batch_size = 50000
+        for batch_start in range(0, n, batch_size):
+            batch_end = min(batch_start + batch_size, n)
 
             for i in range(batch_start, batch_end):
                 neighbors = positions_f32[knn_indices[i]]
@@ -670,22 +669,11 @@ def _convert_las_to_splat(
             if batch_end < n:
                 logger.info(f"[SPLAT] PCA progress: {batch_end:,}/{n:,}")
 
-    # ── Vectorized binary write (much faster than per-point loop) ─────
+    # ── Binary write ──────────────────────────────────────────────────
     logger.info("[SPLAT] Writing binary .splat file...")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Build the entire buffer at once using numpy
-    buf = np.empty(n * 32, dtype=np.uint8)
-
-    # Positions (3×f32 = 12 bytes)
-    pos_bytes = positions_f32.tobytes()
-    for i in range(n):
-        buf[i * 32: i * 32 + 12] = np.frombuffer(
-            positions_f32[i].tobytes(), dtype=np.uint8
-        )
-
-    # Use struct pack_into with a bytearray for maximum speed
-    import array
+    # struct.pack_into over a preallocated bytearray
     out_buf = bytearray(n * 32)
     for i in range(n):
         offset_b = i * 32
@@ -719,8 +707,16 @@ def _convert_las_to_splat(
         splat_count=n,
         file_size_bytes=file_size,
         format="splat",
-        bbox_min=[float(np.min(positions_x)), float(np.min(positions_y)), float(np.min(positions_z))],
-        bbox_max=[float(np.max(positions_x)), float(np.max(positions_y)), float(np.max(positions_z))],
+        bbox_min=[
+            float(np.min(positions_f32[:, 0])),
+            float(np.min(positions_f32[:, 1])),
+            float(np.min(positions_f32[:, 2])),
+        ],
+        bbox_max=[
+            float(np.max(positions_f32[:, 0])),
+            float(np.max(positions_f32[:, 1])),
+            float(np.max(positions_f32[:, 2])),
+        ],
         centroid=[centroid_x, centroid_y, centroid_z],
         source_format="las",
         has_sh_coefficients=False,

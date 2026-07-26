@@ -43,13 +43,13 @@ class TemporalComparisonService:
     ) -> dict[str, Any]:
         """
         Compare two DSM rasters to detect elevation changes.
-        
+
         Args:
             dsm_epoch1_path: Earlier DSM raster
             dsm_epoch2_path: Later DSM raster
             change_threshold_m: Minimum height change to register
             cell_size_m: Raster resolution
-            
+
         Returns:
             Change analysis with classified zones
         """

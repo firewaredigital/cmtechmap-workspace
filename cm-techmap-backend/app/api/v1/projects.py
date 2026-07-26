@@ -2,14 +2,36 @@
 
 import uuid
 from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db, get_current_user, require_gestor, require_viewer
-from app.schemas.project import ProjectCreate, ProjectRead, ProjectUpdate, ProjectListResponse
+from app.dependencies import get_db, require_gestor, require_viewer
+from app.middleware.subscription_enforcement import enforce_project_limit
+from app.schemas.project import ProjectCreate, ProjectListResponse, ProjectRead, ProjectUpdate
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
+
+
+async def _next_project_code(db: AsyncSession) -> str:
+    """
+    Generate the next sequential project code (PRJ-001, PRJ-002, ...).
+
+    Uses MAX over the numeric suffix instead of COUNT(*): counting rows breaks
+    as soon as a project is deleted (the next count collides with an existing
+    code, which violates the UNIQUE constraint on `code`).
+    """
+    result = await db.execute(text(
+        r"""
+        SELECT COALESCE(MAX(NULLIF(regexp_replace(code, '\D', '', 'g'), '')::int), 0)
+        FROM projects
+        WHERE code LIKE 'PRJ-%'
+        """
+    ))
+    next_number = int(result.scalar() or 0) + 1
+    return f"PRJ-{next_number:03d}"
 
 
 @router.get("", response_model=ProjectListResponse)
@@ -46,36 +68,44 @@ async def list_projects(
 
     items = [ProjectRead(
         id=r[0], code=r[1], name=r[2], description=r[3], status=r[4],
-        city=r[5], state=r[6], area_sqm=r[7], flight_count=r[8],
-        image_count=r[9], created_at=r[10], updated_at=r[11],
+        city=r[5], state=r[6], area_sqm=r[7], flight_count=r[8] or 0,
+        image_count=r[9] or 0, created_at=r[10], updated_at=r[11],
     ) for r in result.fetchall()]
 
     return ProjectListResponse(total=total, page=page, page_size=page_size, items=items)
 
 
-@router.post("", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=ProjectRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(enforce_project_limit)],
+)
 async def create_project(
     body: ProjectCreate,
     db: AsyncSession = Depends(get_db),
     user: dict[str, Any] = Depends(require_gestor),
 ):
     """Create a new mapping project."""
-    # Generate sequential code: PRJ-001, PRJ-002, ...
-    code_result = await db.execute(text(
-        "SELECT COUNT(*) FROM projects"
-    ))
-    count = (code_result.scalar() or 0) + 1
-    code = f"PRJ-{count:03d}"
+    row = None
+    # Retry a few times: two concurrent creations can compute the same next
+    # code, and the UNIQUE constraint on `code` rejects the loser.
+    for _ in range(3):
+        code = await _next_project_code(db)
+        try:
+            result = await db.execute(text(
+                "INSERT INTO projects (code, name, description, city, state, status) "
+                "VALUES (:code, :name, :desc, :city, :state, 'pendente') "
+                "RETURNING id, code, name, description, status, city, state, "
+                "area_sqm, flight_count, image_count, created_at, updated_at"
+            ), {"code": code, "name": body.name, "desc": body.description,
+                "city": body.city, "state": body.state})
+            row = result.fetchone()
+            break
+        except IntegrityError:
+            await db.rollback()
+            continue
 
-    result = await db.execute(text(
-        "INSERT INTO projects (code, name, description, city, state, status) "
-        "VALUES (:code, :name, :desc, :city, :state, 'pendente') "
-        "RETURNING id, code, name, description, status, city, state, "
-        "area_sqm, flight_count, image_count, created_at, updated_at"
-    ), {"code": code, "name": body.name, "desc": body.description,
-        "city": body.city, "state": body.state})
-
-    row = result.fetchone()
     if not row:
         raise HTTPException(status_code=500, detail="Failed to create project")
 
@@ -125,7 +155,6 @@ async def update_project(
 
     set_clause = ", ".join(f"{k} = :{k}" for k in updates)
     updates["id"] = str(project_id)
-    updates["now"] = "NOW()"
 
     await db.execute(text(
         f"UPDATE projects SET {set_clause}, updated_at = NOW() WHERE id = :id"

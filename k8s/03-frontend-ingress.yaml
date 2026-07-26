@@ -22,7 +22,7 @@ spec:
         - name: frontend
           image: registry.cm-solucoes.com.br/cm-techmap/frontend:latest
           ports:
-            - containerPort: 80
+            - containerPort: 3000
           resources:
             requests:
               cpu: "100m"
@@ -48,7 +48,7 @@ spec:
     app: frontend
   ports:
     - port: 80
-      targetPort: 80
+      targetPort: 3000
   type: ClusterIP
 
 ---

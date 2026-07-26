@@ -1,12 +1,12 @@
 """CM TECHMAP — WebSocket Endpoint for Real-Time Processing Progress"""
 
 import asyncio
-import json
+import contextlib
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.core.pubsub import subscribe_progress, get_last_progress
+from app.core.pubsub import get_last_progress, subscribe_progress
 
 router = APIRouter(tags=["WebSocket"])
 logger = logging.getLogger(__name__)
@@ -15,6 +15,42 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_INTERVAL = 15
 # Maximum idle time (no updates) before closing the connection
 MAX_IDLE_SECONDS = 600  # 10 minutes
+
+# Celery state → frontend stage mapping for the HTTP polling fallback
+_CELERY_STATE_STAGES = {
+    "SUCCESS": ("completed", 100),
+    "FAILURE": ("failed", 0),
+    "REVOKED": ("canceled", 0),
+    "PENDING": ("queued", 0),
+    "RECEIVED": ("queued", 0),
+    "STARTED": ("processing", 5),
+    "RETRY": ("processing", 5),
+}
+
+
+@router.get("/processing/{task_id}/status")
+async def get_processing_status(task_id: str):
+    """
+    HTTP polling fallback for processing progress.
+
+    Used by frontends running behind proxies that cannot forward WebSockets
+    (e.g. Vercel rewrites). Returns the last progress event published to
+    Redis, falling back to the raw Celery task state.
+    """
+    state = await get_last_progress(task_id)
+    if state:
+        return state
+
+    from app.celery_app import celery_app
+
+    result = celery_app.AsyncResult(task_id)
+    stage, progress = _CELERY_STATE_STAGES.get(result.status, ("processing", 0))
+    return {
+        "task_id": task_id,
+        "stage": stage,
+        "progress": progress,
+        "message": f"Task {result.status}",
+    }
 
 
 @router.websocket("/ws/processing/{task_id}")
@@ -82,10 +118,8 @@ async def ws_processing_progress(websocket: WebSocket, task_id: str):
         # Cancel remaining tasks
         for task in pending:
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-            except (asyncio.CancelledError, Exception):
-                pass
 
         # Check if progress task raised an exception
         for task in done:
@@ -100,18 +134,14 @@ async def ws_processing_progress(websocket: WebSocket, task_id: str):
         logger.info(f"[WS] Client disconnected for task {task_id}")
     except Exception as e:
         logger.error(f"[WS] Error for task {task_id}: {e}")
-        try:
+        with contextlib.suppress(Exception):
             await websocket.send_json({
                 "type": "error",
                 "message": str(e),
             })
-        except Exception:
-            pass
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await websocket.close()
-        except Exception:
-            pass
 
 
 async def _stream_progress(websocket: WebSocket, task_id: str) -> None:
@@ -169,7 +199,7 @@ async def _client_listener(websocket: WebSocket, task_id: str) -> None:
                 elif message == "close":
                     logger.info(f"[WS] Client requested close for {task_id}")
                     return
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.info(f"[WS] Connection idle timeout for {task_id}")
                 return
     except WebSocketDisconnect:

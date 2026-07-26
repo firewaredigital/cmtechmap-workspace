@@ -88,7 +88,8 @@ class NodeODMClient:
         for path in image_paths:
             p = Path(path)
             if p.exists():
-                files.append(("images", (p.name, open(p, "rb"), "image/jpeg")))
+                fh = open(p, "rb")  # noqa: SIM115 — closed in the finally below
+                files.append(("images", (p.name, fh, "image/jpeg")))
 
         if not files:
             raise NodeODMError(f"No valid image files found in {image_paths}")
@@ -234,15 +235,14 @@ class NodeODMClient:
 
         logger.info(f"[ODM] Downloading {asset} from task {task_uuid}")
 
-        async with httpx.AsyncClient(timeout=600) as client:
-            async with client.stream(
-                "GET",
-                f"{self.base_url}/task/{task_uuid}/download/{asset}",
-            ) as resp:
-                resp.raise_for_status()
-                with open(dest, "wb") as f:
-                    async for chunk in resp.aiter_bytes(chunk_size=65536):
-                        f.write(chunk)
+        async with httpx.AsyncClient(timeout=600) as client, client.stream(
+            "GET",
+            f"{self.base_url}/task/{task_uuid}/download/{asset}",
+        ) as resp:
+            resp.raise_for_status()
+            with open(dest, "wb") as f:
+                async for chunk in resp.aiter_bytes(chunk_size=65536):
+                    f.write(chunk)
 
         file_size = dest.stat().st_size
         logger.info(
@@ -339,15 +339,14 @@ class NodeODMClient:
             try:
                 # Use extended timeout for large assets (3D models can be >1GB)
                 timeout = 1800 if asset_name == "textured_model.zip" else 600
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    async with client.stream(
-                        "GET",
-                        f"{self.base_url}/task/{task_uuid}/download/{asset_name}",
-                    ) as resp:
-                        resp.raise_for_status()
-                        with open(local_path, "wb") as f:
-                            async for chunk in resp.aiter_bytes(chunk_size=131072):
-                                f.write(chunk)
+                async with httpx.AsyncClient(timeout=timeout) as client, client.stream(
+                    "GET",
+                    f"{self.base_url}/task/{task_uuid}/download/{asset_name}",
+                ) as resp:
+                    resp.raise_for_status()
+                    with open(local_path, "wb") as f:
+                        async for chunk in resp.aiter_bytes(chunk_size=131072):
+                            f.write(chunk)
 
                 file_size = local_path.stat().st_size
                 downloaded[asset_name] = local_path

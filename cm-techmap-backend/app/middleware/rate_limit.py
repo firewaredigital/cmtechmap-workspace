@@ -1,7 +1,11 @@
 """
 CM TECHMAP — Rate Limiting Middleware
 In-memory sliding-window rate limiter for sensitive endpoints (login, register).
-Uses Redis when available; falls back to in-memory dict.
+
+State is PER-PROCESS: with multiple uvicorn/gunicorn workers each worker
+enforces its own window, so effective limits scale with worker count. The
+deployed topology runs a single API worker, which keeps this accurate; move
+the window to Redis before scaling API workers horizontally.
 """
 
 import logging
@@ -17,10 +21,13 @@ logger = logging.getLogger("cm_techmap.rate_limit")
 # ── Configuration ─────────────────────────────────────────────────────────────
 # Endpoint → (max_requests, window_seconds)
 RATE_LIMITS: dict[str, tuple[int, int]] = {
-    "/api/v1/auth/login": (10, 60),       # 10 attempts per minute
+    "/api/v1/auth/login": (10, 60),        # 10 attempts per minute
     "/api/v1/auth/register": (5, 300),     # 5 registrations per 5 minutes
+    "/api/v1/auth/sso/exchange": (10, 60),  # 10 code exchanges per minute
     "/api/v1/auth/refresh": (30, 60),      # 30 refreshes per minute
-    "/api/v1/uploads": (20, 60),           # 20 uploads per minute
+    # Only upload INITIALIZATION is limited — the per-chunk endpoints legitimately
+    # receive hundreds of requests per file and must never be throttled here.
+    "/api/v1/uploads/init": (20, 60),      # 20 new uploads per minute
 }
 
 # Global fallback for all other authenticated endpoints
@@ -74,15 +81,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
             return await call_next(request)
 
-        # Find matching rate limit config
+        # Find matching rate limit config; only configured endpoints are limited
+        matched = False
         max_requests, window = DEFAULT_RATE_LIMIT
         for endpoint, limits in RATE_LIMITS.items():
-            if path.startswith(endpoint):
+            if path == endpoint:
                 max_requests, window = limits
+                matched = True
                 break
 
-        # Only enforce stricter limits on configured endpoints
-        if path not in RATE_LIMITS and path not in {p for p in RATE_LIMITS}:
+        if not matched:
             return await call_next(request)
 
         now = time.monotonic()

@@ -1,0 +1,32 @@
+# ==============================================================================
+# CM TECHMAP — OCI Micro Nginx Gateway (backend-only stack)
+# Bakes nginx.oci-micro.conf as the MAIN nginx.conf. The prod Dockerfile
+# cannot be reused here: nginx.prod.conf declares frontend/titiler/martin/
+# flower/grafana upstreams that do not exist in the micro stack, which makes
+# nginx exit at startup with "host not found in upstream".
+# ==============================================================================
+
+FROM nginx:1.27-alpine
+
+RUN apk add --no-cache openssl bash
+
+# Remove default config entirely
+RUN rm -f /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/*.conf
+
+# Main config (top-level directives included — NOT a conf.d template)
+COPY nginx.oci-micro.conf /etc/nginx/nginx.conf
+
+RUN mkdir -p /var/cache/nginx \
+             /var/www/certbot \
+             /etc/nginx/ssl \
+             /var/log/nginx
+
+COPY generate-ssl.sh /docker-entrypoint.d/10-generate-ssl.sh
+RUN chmod +x /docker-entrypoint.d/10-generate-ssl.sh
+
+HEALTHCHECK --interval=60s --timeout=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:80/nginx-health || exit 1
+
+EXPOSE 80 443
+
+CMD ["nginx", "-g", "daemon off;"]

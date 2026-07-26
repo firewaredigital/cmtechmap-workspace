@@ -3,7 +3,6 @@ CM TECHMAP — COG Converter & Geospatial Metadata Extractor
 Converts GeoTIFFs to Cloud Optimized GeoTIFF and extracts spatial metadata.
 """
 
-import json
 import logging
 import subprocess
 from pathlib import Path
@@ -103,9 +102,11 @@ def extract_geospatial_metadata(file_path: str | Path) -> dict[str, Any]:
         band_count = ds.count
         dtype = str(ds.dtypes[0])
 
-        # Calculate resolution in cm
+        # Calculate resolution in cm (average of both axes — pixels are not
+        # always perfectly square after reprojection)
         res_x = abs(transform.a)
         res_y = abs(transform.e)
+        res_avg = (res_x + res_y) / 2
 
         # Convert bounds to WGS84 (EPSG:4326) if needed
         if crs and str(crs) != "EPSG:4326":
@@ -133,12 +134,8 @@ def extract_geospatial_metadata(file_path: str | Path) -> dict[str, Any]:
         center_lon = (bounds_wgs84["west"] + bounds_wgs84["east"]) / 2
         center_lat = (bounds_wgs84["south"] + bounds_wgs84["north"]) / 2
 
-        # Estimate resolution in cm (approximate for geographic CRS)
-        if crs and crs.is_geographic:
-            # ~111,320 m per degree at equator
-            resolution_cm = res_x * 111320 * 100
-        else:
-            resolution_cm = res_x * 100
+        # Estimate resolution in cm (~111,320 m per degree for geographic CRS)
+        resolution_cm = res_avg * 111320 * 100 if crs and crs.is_geographic else res_avg * 100
 
     metadata = {
         "bounds": bounds_wgs84,
@@ -165,8 +162,8 @@ def extract_geospatial_metadata(file_path: str | Path) -> dict[str, Any]:
 
 def extract_elevation_stats(file_path: str | Path) -> dict[str, float]:
     """Extract min/max elevation from a DSM/DTM GeoTIFF."""
-    import rasterio
     import numpy as np
+    import rasterio
 
     with rasterio.open(file_path) as ds:
         data = ds.read(1)

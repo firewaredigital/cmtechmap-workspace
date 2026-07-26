@@ -7,7 +7,7 @@ and geometric shape filtering. Results are stored as ai_detections.
 import json
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
@@ -47,7 +47,7 @@ class PoolDetectionService:
     ) -> dict[str, Any]:
         """
         Run pool detection pipeline on an orthomosaic asset.
-        
+
         Pipeline:
         1. Load raster from MinIO via rasterio
         2. Compute pseudo-NDWI from RGB bands
@@ -57,7 +57,7 @@ class PoolDetectionService:
         6. Store as ai_detections
         """
         logger.info(f"[POOL] Starting pool detection for asset {flight_asset_id}")
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         # Create analysis run
         run_result = await session.execute(text("""
@@ -79,7 +79,7 @@ class PoolDetectionService:
         try:
             # Get the raster asset path from database
             asset_result = await session.execute(text("""
-                SELECT fa.s3_key, fa.asset_type, f.project_id,
+                SELECT fa.file_key, fa.bucket_name, fa.asset_type, f.project_id,
                        p.bbox_min_lon, p.bbox_min_lat, p.bbox_max_lon, p.bbox_max_lat
                 FROM flight_assets fa
                 JOIN flights f ON f.id = fa.flight_id
@@ -91,7 +91,8 @@ class PoolDetectionService:
             if not asset:
                 raise ValueError(f"Asset {flight_asset_id} not found for project {project_id}")
 
-            s3_key = asset["s3_key"]
+            file_key = asset["file_key"]
+            bucket_name = asset["bucket_name"]
             bbox = {
                 "min_lon": float(asset["bbox_min_lon"] or -50),
                 "min_lat": float(asset["bbox_min_lat"] or -16),
@@ -101,7 +102,7 @@ class PoolDetectionService:
 
             # Try to load and analyze the raster
             pools = await _analyze_raster_for_pools(
-                s3_key, bbox, min_area_sqm, max_area_sqm, confidence_threshold
+                file_key, bucket_name, bbox, min_area_sqm, max_area_sqm, confidence_threshold
             )
 
             # Persist detected pools as ai_detections
@@ -133,7 +134,7 @@ class PoolDetectionService:
                 pool_count += 1
                 total_area += pool["area_sqm"]
 
-            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+            elapsed = (datetime.now(UTC) - start_time).total_seconds()
 
             # Update analysis run
             summary = {
@@ -183,96 +184,104 @@ class PoolDetectionService:
 
 
 async def _analyze_raster_for_pools(
-    s3_key: str, bbox: dict,
+    file_key: str, bucket_name: str | None, bbox: dict,
     min_area: float, max_area: float, conf_threshold: float,
 ) -> list[dict]:
     """
     Analyze orthomosaic for pool detection using spectral + geometric analysis.
-    
-    Uses OpenCV + numpy for image processing when rasterio is not available,
-    falling back to a simulated detection pipeline for demonstration.
+
+    Requires rasterio + numpy. Morphological cleanup uses OpenCV when
+    available and is skipped otherwise (results are slightly noisier).
     """
     pools: list[dict] = []
 
     try:
         import rasterio
         from rasterio.features import shapes as rasterio_shapes
-        from app.config import settings
 
-        # Build MinIO/S3 path
-        s3_path = f"s3://{s3_key}" if s3_key.startswith("cm-techmap") else f"s3://cm-techmap-assets/{s3_key}"
+        from app.config import get_settings
+
+        settings = get_settings()
+
+        # Build MinIO/S3 path. Assets store the bucket separately when known;
+        # otherwise file_key may already be "bucket/path" (reports convention),
+        # and the orthomosaics bucket is the final fallback.
+        if bucket_name:
+            s3_path = f"s3://{bucket_name}/{file_key}"
+        elif "/" in file_key:
+            s3_path = f"s3://{file_key}"
+        else:
+            s3_path = f"s3://{settings.minio_bucket_orthomosaics}/{file_key}"
 
         env_vars = {
-            "AWS_ACCESS_KEY_ID": settings.MINIO_ROOT_USER,
-            "AWS_SECRET_ACCESS_KEY": settings.MINIO_ROOT_PASSWORD,
-            "AWS_S3_ENDPOINT": f"http://{settings.MINIO_ENDPOINT}",
+            "AWS_ACCESS_KEY_ID": settings.minio_root_user,
+            "AWS_SECRET_ACCESS_KEY": settings.minio_root_password,
+            "AWS_S3_ENDPOINT": f"http://{settings.minio_endpoint}",
             "AWS_HTTPS": "NO",
             "AWS_VIRTUAL_HOSTING": "FALSE",
         }
 
-        with rasterio.Env(**env_vars):
-            with rasterio.open(s3_path) as src:
-                # Read RGB bands (assume first 3 bands)
-                red = src.read(1).astype(np.float32)
-                green = src.read(2).astype(np.float32)
-                blue = src.read(3).astype(np.float32)
+        with rasterio.Env(**env_vars), rasterio.open(s3_path) as src:
+            # Read RGB bands (assume first 3 bands)
+            red = src.read(1).astype(np.float32)
+            green = src.read(2).astype(np.float32)
+            blue = src.read(3).astype(np.float32)
 
-                # Compute pseudo-NDWI: (Blue - Red) / (Blue + Red + epsilon)
-                epsilon = 1e-6
-                ndwi = (blue - red) / (blue + red + epsilon)
+            # Compute pseudo-NDWI: (Blue - Red) / (Blue + Red + epsilon)
+            epsilon = 1e-6
+            ndwi = (blue - red) / (blue + red + epsilon)
 
-                # Blue dominance ratio
-                total = red + green + blue + epsilon
-                blue_ratio = blue / total
+            # Blue dominance ratio
+            total = red + green + blue + epsilon
+            blue_ratio = blue / total
 
-                # Water mask: high NDWI + high blue ratio
-                water_mask = (
-                    (ndwi > POOL_MIN_WATER_INDEX) &
-                    (blue_ratio > POOL_MIN_BLUE_RATIO) &
-                    (blue > 80)  # Minimum absolute blue value
-                ).astype(np.uint8)
+            # Water mask: high NDWI + high blue ratio
+            water_mask = (
+                (ndwi > POOL_MIN_WATER_INDEX) &
+                (blue_ratio > POOL_MIN_BLUE_RATIO) &
+                (blue > 80)  # Minimum absolute blue value
+            ).astype(np.uint8)
 
-                # Morphological cleanup
-                try:
-                    import cv2
-                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                    water_mask = cv2.morphologyEx(water_mask, cv2.MORPH_OPEN, kernel)
-                    water_mask = cv2.morphologyEx(water_mask, cv2.MORPH_CLOSE, kernel)
-                except ImportError:
-                    pass  # Skip morphological ops if cv2 not available
+            # Morphological cleanup
+            try:
+                import cv2
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                water_mask = cv2.morphologyEx(water_mask, cv2.MORPH_OPEN, kernel)
+                water_mask = cv2.morphologyEx(water_mask, cv2.MORPH_CLOSE, kernel)
+            except ImportError:
+                pass  # Skip morphological ops if cv2 not available
 
-                # Extract polygons from mask
-                transform = src.transform
-                pixel_area_sqm = abs(transform.a * transform.e) * (111320 ** 2)  # Approximate
+            # Extract polygons from mask
+            transform = src.transform
 
-                for geom, value in rasterio_shapes(water_mask, transform=transform):
-                    if value == 0:
-                        continue
+            for geom, value in rasterio_shapes(water_mask, transform=transform):
+                if value == 0:
+                    continue
 
-                    # Calculate area
-                    area_sqm = _polygon_area_sqm(geom)
-                    if area_sqm < min_area or area_sqm > max_area:
-                        continue
+                # Calculate area
+                area_sqm = _polygon_area_sqm(geom)
+                if area_sqm < min_area or area_sqm > max_area:
+                    continue
 
-                    # Calculate circularity
-                    circularity = _polygon_circularity(geom)
-                    if circularity < POOL_CIRCULARITY_MIN:
-                        continue
+                # Calculate circularity
+                circularity = _polygon_circularity(geom)
+                if circularity < POOL_CIRCULARITY_MIN:
+                    continue
 
-                    # Compute average spectral values in the polygon region
-                    confidence = min(1.0, 0.5 + circularity * 0.3 + 0.2)
+                # Compute average spectral values in the polygon region
+                confidence = min(1.0, 0.5 + circularity * 0.3 + 0.2)
 
-                    if confidence >= conf_threshold:
-                        pools.append({
-                            "geometry": geom,
-                            "area_sqm": round(area_sqm, 2),
-                            "perimeter_m": round(_polygon_perimeter_m(geom), 2),
-                            "confidence": round(confidence, 3),
-                            "circularity": round(circularity, 3),
-                            "water_index": round(float(np.mean(ndwi)), 3),
-                            "blue_ratio": round(float(np.mean(blue_ratio)), 3),
-                            "shape_type": _classify_pool_shape(circularity),
-                        })
+                if confidence >= conf_threshold:
+                    pools.append({
+                        "geometry": geom,
+                        "area_sqm": round(area_sqm, 2),
+                        "perimeter_m": round(_polygon_perimeter_m(geom), 2),
+                        "confidence": round(confidence, 3),
+                        "circularity": round(circularity, 3),
+                        "water_index": round(float(np.mean(ndwi)), 3),
+                        "blue_ratio": round(float(np.mean(blue_ratio)), 3),
+                        "shape_type": _classify_pool_shape(circularity),
+                    })
 
         logger.info(f"[POOL] Rasterio analysis found {len(pools)} candidate pools")
 

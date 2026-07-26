@@ -3,13 +3,16 @@
 # docker compose -f docker-compose.prod.yml -f docker-compose.scale.yml up -d
 # ==============================================================================
 # This file overrides the production compose to enable horizontal scaling.
-# Use Docker Compose profiles or `docker compose up --scale` for quick scaling.
 #
-# Quick scale:
-#   docker compose -f docker-compose.prod.yml up -d --scale backend=4 --scale celery-worker=8
-#
-# For full configuration control, use this override file:
-#   docker compose -f docker-compose.prod.yml -f docker-compose.scale.yml up -d
+# NOTES:
+# - `ports` is RESET on backend: the base file publishes 127.0.0.1:8000, and a
+#   published host port can only be bound by ONE replica — without the reset,
+#   replicas 2..N fail with "port is already allocated". Traffic reaches the
+#   backends through the nginx upstream (Docker DNS round-robin).
+# - Swarm-only keys (update_config/restart_policy) were removed: plain
+#   `docker compose up` silently ignores them, which advertised zero-downtime
+#   rolling updates that never actually happened.
+# - celery-beat lives in docker-compose.prod.yml (exactly one instance).
 # ==============================================================================
 
 name: cm-techmap-prod
@@ -17,10 +20,10 @@ name: cm-techmap-prod
 services:
   # ────────────────────────────────────────────────────────────────────────────
   # Backend — Horizontal Replicas
-  # Remove container_name to allow multiple instances
   # ────────────────────────────────────────────────────────────────────────────
   backend:
     container_name: ""  # Allow multiple replicas
+    ports: !reset []    # Replicas cannot share a published host port
     deploy:
       replicas: ${BACKEND_REPLICAS:-4}
       resources:
@@ -28,16 +31,6 @@ services:
           memory: 4G
         reservations:
           memory: 1G
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 10
-        window: 120s
-      update_config:
-        parallelism: 1        # Rolling update: one at a time
-        delay: 15s
-        failure_action: rollback
-        order: start-first    # Start new before stopping old (zero downtime)
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 10s
@@ -57,42 +50,9 @@ services:
           memory: 8G
         reservations:
           memory: 2G
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 10
-        window: 120s
 
   # ────────────────────────────────────────────────────────────────────────────
-  # Celery Beat — Exactly ONE instance (cron scheduler)
-  # ────────────────────────────────────────────────────────────────────────────
-  celery-beat:
-    build:
-      context: ./cm-techmap-backend
-      dockerfile: Dockerfile
-    restart: always
-    command: >
-      celery -A app.celery_app beat
-        --loglevel=info
-        --schedule=/tmp/celerybeat-schedule
-    environment:
-      - APP_ENV=production
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/1
-    depends_on:
-      redis:
-        condition: service_healthy
-    networks:
-      - cm-network
-    deploy:
-      replicas: 1  # MUST be exactly 1
-      resources:
-        limits:
-          memory: 256M
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # Nginx — Updated upstream for multiple backends
-  # Round-robin load balancing across backend replicas
+  # Nginx — wait for at least one healthy backend replica
   # ────────────────────────────────────────────────────────────────────────────
   nginx:
     depends_on:

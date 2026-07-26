@@ -5,7 +5,7 @@ Handles CRUD, role assignment, status management, and audit logging.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -58,17 +58,17 @@ class KeycloakAdminService:
         Obtain an admin access token from Keycloak master realm.
         Caches token until near expiry.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if self._admin_token and self._token_expires and now < self._token_expires:
             return self._admin_token
 
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
                 resp = await client.post(KC_TOKEN_URL, data={
                     "grant_type": "password",
                     "client_id": "admin-cli",
-                    "username": "admin",
-                    "password": "admin_dev_2026",
+                    "username": settings.keycloak_admin_username,
+                    "password": settings.keycloak_admin_password,
                 })
                 if resp.status_code != 200:
                     raise KeycloakAdminError(
@@ -108,7 +108,7 @@ class KeycloakAdminService:
         if search:
             params["search"] = search
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             # Get users
             resp = await client.get(f"{KC_ADMIN_URL}/users", headers=headers, params=params)
             if resp.status_code != 200:
@@ -135,7 +135,7 @@ class KeycloakAdminService:
     async def get_user(self, user_id: str) -> dict[str, Any]:
         """Get a single user by ID with full details."""
         headers = await self._headers()
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             resp = await client.get(f"{KC_ADMIN_URL}/users/{user_id}", headers=headers)
             if resp.status_code == 404:
                 raise KeycloakAdminError("User not found", 404)
@@ -185,7 +185,7 @@ class KeycloakAdminService:
             },
         }
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             resp = await client.post(
                 f"{KC_ADMIN_URL}/users",
                 headers=headers,
@@ -227,7 +227,7 @@ class KeycloakAdminService:
         headers = await self._headers()
 
         # Fetch current user
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             resp = await client.get(f"{KC_ADMIN_URL}/users/{user_id}", headers=headers)
             if resp.status_code == 404:
                 raise KeycloakAdminError("User not found", 404)
@@ -255,7 +255,7 @@ class KeycloakAdminService:
             update["attributes"] = attrs
 
         if update:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
                 resp = await client.put(
                     f"{KC_ADMIN_URL}/users/{user_id}",
                     headers=headers,
@@ -270,7 +270,7 @@ class KeycloakAdminService:
     async def delete_user(self, user_id: str) -> None:
         """Delete a user from Keycloak permanently."""
         headers = await self._headers()
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             resp = await client.delete(f"{KC_ADMIN_URL}/users/{user_id}", headers=headers)
             if resp.status_code == 404:
                 raise KeycloakAdminError("User not found", 404)
@@ -296,7 +296,7 @@ class KeycloakAdminService:
             r for r in current_roles if r["name"] in PLATFORM_ROLES
         ]
         if platform_roles_to_remove:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
                 await client.delete(
                     f"{KC_ADMIN_URL}/users/{user_id}/role-mappings/realm",
                     headers=headers,
@@ -311,7 +311,7 @@ class KeycloakAdminService:
     async def get_available_roles(self) -> list[dict[str, Any]]:
         """Get all platform roles with descriptions."""
         headers = await self._headers()
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             resp = await client.get(f"{KC_ADMIN_URL}/roles", headers=headers)
             if resp.status_code != 200:
                 raise KeycloakAdminError(f"Failed to list roles: {resp.text}", resp.status_code)
@@ -333,7 +333,7 @@ class KeycloakAdminService:
     async def logout_user(self, user_id: str) -> None:
         """Terminate all active sessions for a user."""
         headers = await self._headers()
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             resp = await client.post(
                 f"{KC_ADMIN_URL}/users/{user_id}/logout",
                 headers=headers,
@@ -345,7 +345,7 @@ class KeycloakAdminService:
     async def reset_password(self, user_id: str, new_password: str, temporary: bool = False) -> None:
         """Reset a user's password."""
         headers = await self._headers()
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             resp = await client.put(
                 f"{KC_ADMIN_URL}/users/{user_id}/reset-password",
                 headers=headers,
@@ -360,7 +360,7 @@ class KeycloakAdminService:
     async def get_user_stats(self) -> dict[str, Any]:
         """Get aggregate user statistics."""
         headers = await self._headers()
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             # Total users
             count_resp = await client.get(f"{KC_ADMIN_URL}/users/count", headers=headers)
             total = count_resp.json() if count_resp.status_code == 200 else 0
@@ -373,7 +373,11 @@ class KeycloakAdminService:
             active_sessions = 0
             if sessions_resp.status_code == 200:
                 for s in sessions_resp.json():
-                    active_sessions += s.get("active", 0)
+                    # Keycloak returns "active" as a STRING (e.g. "3")
+                    try:
+                        active_sessions += int(s.get("active", 0) or 0)
+                    except (TypeError, ValueError):
+                        continue
 
         # Role breakdown (sample first 200 users)
         users, _ = await self.list_users(max_results=200)
@@ -403,7 +407,7 @@ class KeycloakAdminService:
         self, user_id: str, headers: dict[str, str]
     ) -> list[dict[str, Any]]:
         """Get realm role mappings for a user."""
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             resp = await client.get(
                 f"{KC_ADMIN_URL}/users/{user_id}/role-mappings/realm",
                 headers=headers,
@@ -417,7 +421,7 @@ class KeycloakAdminService:
     ) -> None:
         """Assign a realm role to a user."""
         # First, get the role representation
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             resp = await client.get(f"{KC_ADMIN_URL}/roles/{role_name}", headers=headers)
             if resp.status_code != 200:
                 raise KeycloakAdminError(f"Role '{role_name}' not found in Keycloak", 404)
@@ -438,7 +442,7 @@ class KeycloakAdminService:
         self, email: str, headers: dict[str, str]
     ) -> list[dict[str, Any]]:
         """Search users by exact email."""
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             resp = await client.get(
                 f"{KC_ADMIN_URL}/users",
                 headers=headers,
@@ -450,7 +454,7 @@ class KeycloakAdminService:
         self, user_id: str, headers: dict[str, str]
     ) -> list[dict[str, Any]]:
         """Get active sessions for a user."""
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             resp = await client.get(
                 f"{KC_ADMIN_URL}/users/{user_id}/sessions",
                 headers=headers,

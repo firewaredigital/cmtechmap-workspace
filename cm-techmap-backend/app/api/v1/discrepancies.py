@@ -4,9 +4,10 @@ The core "Fiscal Virtual" workflow: municipal employees review AI-detected
 tax discrepancies and decide to approve, reject, or schedule inspections.
 """
 
+import contextlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -292,7 +293,7 @@ async def approve_discrepancy(
     Updates status, records reviewer, and generates a tax assessment entry.
     """
     user_id = user.get("sub", "unknown")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Validate current status
     check = await db.execute(text(
@@ -315,11 +316,11 @@ async def approve_discrepancy(
         WHERE id = :id
     """), {"id": str(discrepancy_id), "uid": user_id, "now": now, "notes": notes})
 
-    # Create notification
-    try:
+    # Create notification (non-critical — user_id column is VARCHAR, no cast)
+    with contextlib.suppress(Exception):
         await db.execute(text("""
             INSERT INTO notifications (user_id, title, message, type, category, link)
-            VALUES (:uid::uuid, :title, :msg, 'success', 'fiscal',
+            VALUES (:uid, :title, :msg, 'success', 'fiscal',
                     '/fiscal/review/' || :did)
         """), {
             "uid": user_id,
@@ -327,8 +328,6 @@ async def approve_discrepancy(
             "msg": f"Lançamento IPTU de R$ {row['estimated_iptu_gap_brl']:.2f} aprovado.",
             "did": str(discrepancy_id),
         })
-    except Exception:
-        pass  # Non-critical
 
     await db.commit()
     logger.info(f"Discrepancy {discrepancy_id} approved by {user_id}, gap=R${row['estimated_iptu_gap_brl']:.2f}")
@@ -354,7 +353,7 @@ async def reject_discrepancy(
     Records the rejection reason for AI model improvement.
     """
     user_id = user.get("sub", "unknown")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     valid_reasons = {"shadow", "ai_error", "already_regularized", "duplicate", "other"}
     if reason not in valid_reasons:
@@ -406,7 +405,7 @@ async def schedule_inspection(
     A physical inspector will verify the construction on-site.
     """
     user_id = user.get("sub", "unknown")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     try:
         insp_date = datetime.fromisoformat(inspection_date)
@@ -457,7 +456,7 @@ async def record_inspection_result(
 ):
     """Record the result of a field inspection."""
     user_id = user.get("sub", "unknown")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     valid_results = {"confirmed", "not_confirmed", "partial"}
     if result_status not in valid_results:
@@ -498,7 +497,7 @@ async def record_inspection_result(
 async def export_discrepancies(
     project_id: UUID | None = Query(None),
     status: str | None = Query(None),
-    format: str = Query("json", description="json|csv"),
+    export_format: str = Query("json", alias="format", description="json|csv"),
     db: AsyncSession = Depends(get_db),
     user: dict[str, Any] = Depends(require_gestor),
 ):

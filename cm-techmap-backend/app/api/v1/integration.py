@@ -5,16 +5,15 @@ Import cadastral data from municipal systems and export decisions.
 
 import csv
 import io
-import json
 import logging
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db, require_gestor, require_tenant_admin
+from app.dependencies import get_db, require_gestor, require_tenant_admin, require_viewer
 
 logger = logging.getLogger("cm_techmap.api.integration")
 
@@ -141,6 +140,7 @@ async def preview_csv(
     encoding: str = Query("utf-8"),
     delimiter: str = Query(",", max_length=1),
     preview_rows: int = Query(5, ge=1, le=20),
+    user: dict[str, Any] = Depends(require_tenant_admin),
 ):
     """Preview CSV contents: show columns and first N rows without importing."""
     content = await file.read()
@@ -173,7 +173,7 @@ async def preview_csv(
 async def export_decisions(
     project_id: UUID | None = Query(None),
     status: str = Query("approved"),
-    format: str = Query("csv", description="csv|json"),
+    export_format: str = Query("csv", alias="format", description="csv|json"),
     db: AsyncSession = Depends(get_db),
     user: dict[str, Any] = Depends(require_gestor),
 ):
@@ -217,7 +217,7 @@ async def export_decisions(
             row["reviewed_at"] = row["reviewed_at"].isoformat()
         rows.append(row)
 
-    if format == "csv":
+    if export_format == "csv":
         if not rows:
             return {"csv": "", "count": 0}
         output = io.StringIO()
@@ -234,7 +234,7 @@ async def export_decisions(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/mappings/suggested")
-async def get_suggested_mappings():
+async def get_suggested_mappings(user: dict[str, Any] = Depends(require_viewer)):
     """Return suggested column mappings for common municipal CSV formats."""
     return {
         "mappings": [

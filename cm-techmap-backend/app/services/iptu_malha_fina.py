@@ -6,7 +6,7 @@ to identify tax discrepancies. Results are PERSISTED to the database.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import text
@@ -42,7 +42,7 @@ class IPTUMalhaFinaService:
         municipality_code: str | None = None,
     ) -> dict[str, Any]:
         logger.info(f"[IPTU] Starting Malha Fina v2 for project {project_id}")
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         # ── Step 0: Create analysis_run record ────────────────────────────
         run_result = await session.execute(text("""
@@ -240,7 +240,7 @@ class IPTUMalhaFinaService:
             })
 
         # ── Step 6: Update analysis_run with results ──────────────────────
-        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+        elapsed = (datetime.now(UTC) - start_time).total_seconds()
         summary = {
             "total_detections": len(detections),
             "total_parcels": len(parcels),

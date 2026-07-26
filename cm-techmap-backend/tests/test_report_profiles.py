@@ -3,9 +3,9 @@ CM TECHMAP — Report Profile and Preset Tests
 Covers advanced report profile contracts, config presets, and QA section synthesis.
 """
 
-import uuid
 import sys
 import types
+import uuid
 
 import pytest
 

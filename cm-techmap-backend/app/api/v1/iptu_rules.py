@@ -309,6 +309,7 @@ async def simulate_iptu_calculation(
     zone_name: str = Query("residencial"),
     registered_area_sqm: float = Query(100.0, ge=0),
     detected_area_sqm: float = Query(150.0, ge=0),
+    land_area_sqm: float = Query(0.0, ge=0, description="Área do terreno (m²) — compõe o valor venal"),
     has_pool: bool = Query(False),
     building_age_years: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -340,12 +341,16 @@ async def simulate_iptu_calculation(
     depreciation_pct = min(building_age_years * dep_rate * 100, 50.0)
     depreciation_factor = 1 - (depreciation_pct / 100)
 
+    # Venal value = land component (VVT) + built component (VVE).
+    # Depreciation applies only to the built portion.
+    land_component = land_area_sqm * land_val
+
     # Calculate current IPTU (based on registered area)
-    venal_registered = registered_area_sqm * built_val * depreciation_factor
+    venal_registered = land_component + registered_area_sqm * built_val * depreciation_factor
     iptu_registered = venal_registered * (aliquot / 100)
 
     # Calculate proposed IPTU (based on detected area)
-    venal_detected = detected_area_sqm * built_val * depreciation_factor
+    venal_detected = land_component + detected_area_sqm * built_val * depreciation_factor
     iptu_detected = venal_detected * (aliquot / 100)
 
     # Pool surcharge
@@ -360,10 +365,12 @@ async def simulate_iptu_calculation(
             "zone": zone_name,
             "registered_area_sqm": registered_area_sqm,
             "detected_area_sqm": detected_area_sqm,
+            "land_area_sqm": land_area_sqm,
             "has_pool": has_pool,
             "building_age_years": building_age_years,
         },
         "rates": {
+            "land_value_per_sqm": land_val,
             "built_value_per_sqm": built_val,
             "aliquot_pct": aliquot,
             "depreciation_pct": round(depreciation_pct, 2),

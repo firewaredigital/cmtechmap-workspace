@@ -3,11 +3,12 @@ CM TECHMAP — Post-Processing Celery Tasks
 Tasks for COG conversion, thumbnail generation, and metadata extraction.
 """
 
+import contextlib
+import json
 import logging
 import os
 import shutil
 import tempfile
-from io import BytesIO
 
 from celery import shared_task
 
@@ -50,7 +51,7 @@ def convert_orthomosaic_to_cog(
 
         publish_progress(task_id, "converting", 40, "Converting to COG...")
 
-        from app.core.cog_converter import convert_to_cog, validate_cog, extract_geospatial_metadata
+        from app.core.cog_converter import convert_to_cog, extract_geospatial_metadata, validate_cog
 
         local_cog = convert_to_cog(local_input)
 
@@ -111,22 +112,28 @@ def extract_and_store_metadata(
         metadata = extract_geospatial_metadata(local_path)
 
         # Update database
-        from sqlalchemy import create_engine, text as sa_text
+        from sqlalchemy import create_engine
+        from sqlalchemy import text as sa_text
 
         engine = create_engine(settings.database_url_sync)
         with engine.connect() as conn:
             bounds = metadata.get("bounds", {})
             conn.execute(sa_text(
-                "UPDATE orthomosaics SET "
-                "resolution_cm = :res, width_px = :w, height_px = :h, "
-                "srid = :srid, file_size_bytes = :fsz "
-                "WHERE id = :id"
+                "UPDATE flight_assets SET "
+                "resolution_cm = :res, crs_epsg = :srid, file_size_bytes = :fsz, "
+                "bbox_min_lon = :bw, bbox_min_lat = :bs, "
+                "bbox_max_lon = :be, bbox_max_lat = :bn, "
+                "metadata_json = CAST(:meta AS jsonb), updated_at = NOW() "
+                "WHERE id = CAST(:id AS uuid)"
             ), {
                 "res": metadata.get("resolution_cm"),
-                "w": metadata.get("width_px"),
-                "h": metadata.get("height_px"),
                 "srid": metadata.get("srid", 4326),
                 "fsz": metadata.get("file_size_bytes"),
+                "bw": bounds.get("west"),
+                "bs": bounds.get("south"),
+                "be": bounds.get("east"),
+                "bn": bounds.get("north"),
+                "meta": json.dumps(metadata),
                 "id": orthomosaic_id,
             })
             conn.commit()
@@ -256,7 +263,7 @@ def generate_dsm_and_buildings(
 
         # ── Step 2: Generate synthetic DSM ────────────────────────────────
         publish_progress(task_id, "dsm_generation", 15, "Analyzing orthophoto textures...")
-        from app.core.dsm_generator import generate_synthetic_dsm, extract_dsm_metadata
+        from app.core.dsm_generator import extract_dsm_metadata, generate_synthetic_dsm
 
         dsm_raw = os.path.join(work_dir, "dsm_raw.tif")
         generate_synthetic_dsm(
@@ -293,8 +300,9 @@ def generate_dsm_and_buildings(
         publish_progress(task_id, "uploading", 70, "Uploading DSM and footprints to storage...")
 
         # ── Step 5: Upload to MinIO ───────────────────────────────────────
-        from app.core.storage import upload_file as minio_upload
         import json as json_mod
+
+        from app.core.storage import upload_file as minio_upload
 
         tenant_prefix = orthomosaic_key.split("/")[0] if "/" in orthomosaic_key else "default"
 
@@ -325,7 +333,8 @@ def generate_dsm_and_buildings(
         publish_progress(task_id, "database", 85, "Updating database records...")
 
         # ── Step 6: Insert flight_asset records ───────────────────────────
-        from sqlalchemy import create_engine, text as sa_text
+        from sqlalchemy import create_engine
+        from sqlalchemy import text as sa_text
 
         engine = create_engine(settings.database_url_sync)
         bounds = dsm_meta.get("bounds", {})
@@ -343,7 +352,7 @@ def generate_dsm_and_buildings(
                 if tenant_rows:
                     schemas = ", ".join(r[0] for r in tenant_rows)
                     conn.execute(sa_text(f"SET search_path TO {schemas}, public, topology"))
-                
+
                 # Insert DSM asset
                 conn.execute(sa_text(
                     "INSERT INTO flight_assets "
@@ -406,11 +415,9 @@ def generate_dsm_and_buildings(
         publish_progress(task_id, "failed", 0, str(exc))
         raise  # Do not retry — prevents OOM restart loops
     finally:
-        # Release deduplication lock
-        try:
+        # Release deduplication lock (falls back to TTL expiry on failure)
+        with contextlib.suppress(Exception):
             redis_client.delete(lock_key)
-        except Exception:
-            pass  # Lock will expire via TTL anyway
         if os.path.exists(work_dir):
             shutil.rmtree(work_dir)
 
@@ -513,8 +520,9 @@ def extract_buildings_from_real_dsm(
         # ── Step 5: Update DSM metadata with dsm_source flag ──────────────
         publish_progress(task_id, "database", 90, "Updating database...")
 
-        from sqlalchemy import create_engine, text as sa_text
-        import json as json_mod
+
+        from sqlalchemy import create_engine
+        from sqlalchemy import text as sa_text
 
         engine = create_engine(settings.database_url_sync)
         try:
@@ -692,8 +700,10 @@ def normalize_and_process_real_dsm(
         # ── Step 7: Update database ───────────────────────────────────────
         publish_progress(task_id, "database", 85, "Updating database records...")
 
-        from sqlalchemy import create_engine, text as sa_text
         import json as json_mod
+
+        from sqlalchemy import create_engine
+        from sqlalchemy import text as sa_text
 
         engine = create_engine(settings.database_url_sync)
         try:

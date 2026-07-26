@@ -117,6 +117,8 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.3
     container_name: cm-keycloak
+    # tini as PID 1 reaps the cat/grep orphans left by the health probe
+    init: true
     restart: unless-stopped
     environment:
       # Admin credentials
@@ -146,7 +148,7 @@ services:
     networks:
       - cm-network
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\n\r\n' >&3 && timeout 5 cat <&3 | grep -q 'UP'"]
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '\"status\": *\"UP\"' <&3"]
       interval: 30s
       timeout: 15s
       retries: 15
@@ -228,7 +230,7 @@ services:
       celery -A app.celery_app worker
         --loglevel=info
         --concurrency=1
-        --queues=default,processing,reports
+        --queues=default,processing,reports,ai_llm
         -n worker@%h
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cm_techmap}:${POSTGRES_PASSWORD:-cm_techmap_dev_2026}@postgres:5432/${POSTGRES_DB:-cm_techmap}
@@ -415,7 +417,7 @@ services:
     networks:
       - cm-network
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:80/nginx-health", "-o", "/dev/null"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/nginx-health"]
       interval: 15s
       timeout: 10s
       retries: 5

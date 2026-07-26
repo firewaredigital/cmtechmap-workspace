@@ -7,8 +7,8 @@ Used for IPTU Malha Fina cross-referencing against AI detections.
 from datetime import datetime
 
 from geoalchemy2 import Geometry
-from sqlalchemy import Float, Index, Integer, String, Text, DateTime, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy import DateTime, Float, Index, String, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin

@@ -5,7 +5,6 @@ Used to track all significant user and system actions for compliance.
 """
 
 import logging
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
@@ -128,7 +127,10 @@ def write_audit_log_sync(
     Uses a sync SQLAlchemy engine to write audit entries.
     """
     import json
-    from sqlalchemy import create_engine, text as sa_text
+
+    from sqlalchemy import create_engine
+    from sqlalchemy import text as sa_text
+
     from app.config import get_settings
 
     settings = get_settings()

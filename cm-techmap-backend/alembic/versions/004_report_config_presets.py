@@ -12,7 +12,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID
 
 
 # revision identifiers, used by Alembic.
@@ -23,35 +22,34 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "report_config_presets",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column("municipality_code", sa.String(length=10), nullable=False),
-        sa.Column("municipality_name", sa.String(length=120), nullable=False),
-        sa.Column("iptu_rate_per_sqm", sa.Float(), nullable=False),
-        sa.Column("assumed_irregular_share", sa.Float(), nullable=False, server_default="0.25"),
-        sa.Column("qa_threshold", sa.Float(), nullable=False, server_default="0.80"),
-        sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
-        sa.Column("notes", sa.Text(), nullable=True),
-        sa.Column("created_by", sa.String(length=320), nullable=True),
-        sa.Column("updated_by", sa.String(length=320), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        schema="public",
-    )
+    # Idempotent on purpose: several databases in the field already have this
+    # table from migrations/003_report_config_presets.sql (raw-SQL path), with
+    # alembic_version still at 003.
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS public.report_config_presets (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            municipality_code VARCHAR(10) NOT NULL,
+            municipality_name VARCHAR(120) NOT NULL,
+            iptu_rate_per_sqm FLOAT NOT NULL,
+            assumed_irregular_share FLOAT NOT NULL DEFAULT 0.25,
+            qa_threshold FLOAT NOT NULL DEFAULT 0.80,
+            version INTEGER NOT NULL DEFAULT 1,
+            is_active BOOLEAN NOT NULL DEFAULT true,
+            notes TEXT,
+            created_by VARCHAR(320),
+            updated_by VARCHAR(320),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """)
 
-    op.create_index(
-        "ix_report_config_presets_municipality",
-        "report_config_presets",
-        ["municipality_code", "version"],
-        schema="public",
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_report_config_presets_municipality "
+        "ON public.report_config_presets(municipality_code, version)"
     )
-    op.create_index(
-        "ix_report_config_presets_active",
-        "report_config_presets",
-        ["is_active"],
-        schema="public",
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_report_config_presets_active "
+        "ON public.report_config_presets(is_active)"
     )
 
     op.execute(
@@ -61,16 +59,20 @@ def upgrade() -> None:
                 municipality_code, municipality_name,
                 iptu_rate_per_sqm, assumed_irregular_share, qa_threshold,
                 version, is_active, notes, created_by, updated_by
-            ) VALUES
-                ('5208707', 'Goiania', 12.0, 0.25, 0.80, 1, true,
-                 'Preset inicial para validacao com equipe fiscal municipal.',
-                 'system', 'system'),
-                ('3550308', 'Sao Paulo', 19.5, 0.21, 0.84, 1, true,
-                 'Zona densa urbana: calibracao conservadora para arrecadacao.',
-                 'system', 'system'),
-                ('3304557', 'Rio de Janeiro', 17.2, 0.24, 0.82, 1, true,
-                 'Uso misto: pondera ocupacoes formais e expansoes nao registradas.',
-                 'system', 'system')
+            )
+            SELECT v.code, v.name, v.rate, v.share, v.qa, 1, true, v.notes, 'system', 'system'
+            FROM (VALUES
+                ('5208707', 'Goiania', 12.0, 0.25, 0.80,
+                 'Preset inicial para validacao com equipe fiscal municipal.'),
+                ('3550308', 'Sao Paulo', 19.5, 0.21, 0.84,
+                 'Zona densa urbana: calibracao conservadora para arrecadacao.'),
+                ('3304557', 'Rio de Janeiro', 17.2, 0.24, 0.82,
+                 'Uso misto: pondera ocupacoes formais e expansoes nao registradas.')
+            ) AS v(code, name, rate, share, qa, notes)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM public.report_config_presets p
+                WHERE p.municipality_code = v.code
+            )
             """
         )
     )

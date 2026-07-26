@@ -11,16 +11,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.database import current_tenant_schema
-from app.core.storage import upload_file, compose_parts
-from app.dependencies import get_db, get_current_user, require_operador, require_viewer
-from app.schemas.upload import (UploadInitRequest, UploadInitResponse,
-                                 UploadChunkResponse, UploadCompleteResponse)
+from app.core.storage import compose_parts, upload_file
+from app.dependencies import get_db, require_operador, require_viewer
+from app.middleware.subscription_enforcement import enforce_storage_limit
+from app.schemas.upload import UploadChunkResponse, UploadCompleteResponse, UploadInitRequest, UploadInitResponse
 
 router = APIRouter(prefix="/uploads", tags=["Uploads"])
 settings = get_settings()
 
 
-@router.post("/init", response_model=UploadInitResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/init",
+    response_model=UploadInitResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(enforce_storage_limit)],
+)
 async def init_upload(
     body: UploadInitRequest,
     db: AsyncSession = Depends(get_db),

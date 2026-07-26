@@ -9,9 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.storage import get_presigned_url
-from app.dependencies import get_db, require_viewer, require_operador, require_gestor
-from app.schemas.flight import (FlightCreate, FlightRead, FlightAssetsRead,
-                                  FlightAsset, FlightProcessRequest)
+from app.dependencies import get_db, require_gestor, require_operador, require_viewer
+from app.schemas.flight import FlightAsset, FlightAssetsRead, FlightCreate, FlightProcessRequest, FlightRead
 
 router = APIRouter(prefix="/projects/{project_id}/flights", tags=["Flights"])
 settings = get_settings()

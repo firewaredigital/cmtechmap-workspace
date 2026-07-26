@@ -19,7 +19,6 @@ Architecture context (research transcript Cap. 5):
   - This prevents Z-jittering in WebGL Float32 pipelines
 """
 
-import json
 import logging
 from typing import Any
 
@@ -168,10 +167,9 @@ async def download_model(
     url = f"{minio_ep}/{bucket}/{file_key}"
 
     async def stream_file():
-        async with httpx.AsyncClient(timeout=300) as client:
-            async with client.stream("GET", url) as resp:
-                async for chunk in resp.aiter_bytes(chunk_size=65536):
-                    yield chunk
+        async with httpx.AsyncClient(timeout=300) as client, client.stream("GET", url) as resp:
+            async for chunk in resp.aiter_bytes(chunk_size=65536):
+                yield chunk
 
     filename = file_key.split("/")[-1] if "/" in file_key else file_key
 
@@ -413,10 +411,9 @@ async def download_splat(
     url = f"{minio_ep}/{bucket}/{file_key}"
 
     async def stream_file():
-        async with httpx.AsyncClient(timeout=300) as client:
-            async with client.stream("GET", url) as resp:
-                async for chunk in resp.aiter_bytes(chunk_size=131072):
-                    yield chunk
+        async with httpx.AsyncClient(timeout=300) as client, client.stream("GET", url) as resp:
+            async for chunk in resp.aiter_bytes(chunk_size=131072):
+                yield chunk
 
     filename = file_key.split("/")[-1] if "/" in file_key else file_key
 

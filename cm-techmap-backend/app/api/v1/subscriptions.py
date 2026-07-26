@@ -7,7 +7,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +20,6 @@ from app.schemas.subscription import (
     SubscriptionUpdate,
     UsageReport,
 )
-from app.services.audit_log import AuditAction
 
 logger = logging.getLogger("cm_techmap.api.subscriptions")
 

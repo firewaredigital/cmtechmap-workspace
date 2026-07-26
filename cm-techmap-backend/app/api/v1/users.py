@@ -4,19 +4,25 @@ Full CRUD, role assignment, session management, and statistics.
 All operations go through the Keycloak Admin REST API.
 """
 
+import contextlib
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.dependencies import get_current_user, require_tenant_admin, require_super_admin
-from app.services.keycloak_admin import keycloak_admin, KeycloakAdminError
-from app.schemas.user_management import (
-    UserCreateRequest, UserUpdateRequest, UserRoleChangeRequest,
-    PasswordResetRequest, UserResponse, UserListResponse,
-    UserStatsResponse, RoleResponse,
-)
+from app.dependencies import get_current_user, require_super_admin, require_tenant_admin
 from app.schemas.auth import UserInfo
+from app.schemas.user_management import (
+    PasswordResetRequest,
+    RoleResponse,
+    UserCreateRequest,
+    UserListResponse,
+    UserResponse,
+    UserRoleChangeRequest,
+    UserStatsResponse,
+    UserUpdateRequest,
+)
+from app.services.keycloak_admin import KeycloakAdminError, keycloak_admin
 
 logger = logging.getLogger("cm_techmap.api.users")
 
@@ -62,6 +68,7 @@ async def get_my_activity(
 ):
     """Get the current user's recent activity history from audit logs."""
     from sqlalchemy import text
+
     from app.core.database import get_public_db_session
 
     user_id = user.get("sub") or user.get("email", "")
@@ -101,6 +108,7 @@ async def get_my_notification_count(
 ):
     """Quick endpoint to get unread notification count for the current user."""
     from sqlalchemy import text
+
     from app.core.database import get_public_db_session
 
     user_id = user.get("sub", "")
@@ -343,12 +351,10 @@ async def toggle_user_status(
         new_status = not current.get("enabled", True)
         user = await keycloak_admin.update_user(user_id, enabled=new_status)
 
-        # If disabling, also logout
+        # If disabling, also logout (best-effort)
         if not new_status:
-            try:
+            with contextlib.suppress(KeycloakAdminError):
                 await keycloak_admin.logout_user(user_id)
-            except KeycloakAdminError:
-                pass  # Best-effort
 
         return UserResponse(**user)
     except KeycloakAdminError as e:

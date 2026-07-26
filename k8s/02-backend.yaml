@@ -112,7 +112,7 @@ spec:
       containers:
         - name: worker
           image: registry.cm-solucoes.com.br/cm-techmap/backend:latest
-          command: ["celery", "-A", "app.tasks.celery_app", "worker",
+          command: ["celery", "-A", "app.celery_app", "worker",
                     "--queues=processing",
                     "--concurrency=2",
                     "--loglevel=info",
@@ -164,7 +164,7 @@ spec:
       containers:
         - name: worker
           image: registry.cm-solucoes.com.br/cm-techmap/backend:latest
-          command: ["celery", "-A", "app.tasks.celery_app", "worker",
+          command: ["celery", "-A", "app.celery_app", "worker",
                     "--queues=reports",
                     "--concurrency=3",
                     "--loglevel=info"]
@@ -207,7 +207,7 @@ spec:
       containers:
         - name: beat
           image: registry.cm-solucoes.com.br/cm-techmap/backend:latest
-          command: ["celery", "-A", "app.tasks.celery_app", "beat",
+          command: ["celery", "-A", "app.celery_app", "beat",
                     "--loglevel=info"]
           envFrom:
             - configMapRef:

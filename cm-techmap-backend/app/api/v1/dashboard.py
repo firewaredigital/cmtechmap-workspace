@@ -4,7 +4,7 @@ Aggregated KPIs, activity timeline, and platform-wide metrics.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -27,9 +27,8 @@ async def get_dashboard_analytics(
     Comprehensive dashboard analytics endpoint.
     Returns KPIs, project breakdown, activity timeline, and infrastructure status.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     thirty_days_ago = now - timedelta(days=30)
-    seven_days_ago = now - timedelta(days=7)
 
     # ── KPIs ──────────────────────────────────────────────────────────────
     kpis: dict[str, Any] = {}

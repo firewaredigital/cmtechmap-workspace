@@ -3,9 +3,8 @@ CM TECHMAP — Tenant Lifecycle Tests
 Tests the complete tenant provisioning, migration, and quota enforcement pipeline.
 """
 
+
 import pytest
-import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.tenant_lifecycle import (
     SCHEMA_VERSION,
@@ -14,8 +13,7 @@ from app.services.tenant_lifecycle import (
     _create_tenant_indexes,
     _enable_rls_for_schema,
 )
-from app.services.tenant_quota import TenantQuota, get_tenant_quota
-
+from app.services.tenant_quota import TenantQuota
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SCHEMA VERSION
@@ -81,7 +79,7 @@ class TestTableCreation:
         """SQL should reference the correct schema name."""
         schema = "tenant_goiania"
         await _create_all_tenant_tables(mock_db_session, schema)
-        
+
         # Check that at least one SQL call contains the schema name
         calls = mock_db_session.execute.call_args_list
         sql_texts = [str(call[0][0]) for call in calls]
@@ -190,7 +188,7 @@ class TestTenantQuota:
         starter = TenantQuota("t1", "starter", {"max_users": 5, "max_projects": 10, "max_storage_tb": 1.0}, {})
         pro = TenantQuota("t2", "professional", {"max_users": 25, "max_projects": 50, "max_storage_tb": 5.0}, {})
         ent = TenantQuota("t3", "enterprise", {"max_users": 999, "max_projects": 999, "max_storage_tb": 50.0}, {})
-        
+
         assert starter.limits["max_users"] < pro.limits["max_users"] < ent.limits["max_users"]
         assert starter.limits["max_storage_tb"] < pro.limits["max_storage_tb"] < ent.limits["max_storage_tb"]
 
@@ -204,7 +202,6 @@ class TestMultiTenantIsolation:
 
     def test_schema_name_format(self):
         """Schema name must follow 'tenant_{slug}' pattern."""
-        from app.services.tenant_lifecycle import provision_tenant
         slug = "goiania"
         expected = f"tenant_{slug}"
         assert expected == f"tenant_{slug}"

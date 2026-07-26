@@ -8,18 +8,18 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.services.public_data import IBGEClient, INMETClient, CEMADENClient
 from app.schemas.public_data import (
+    AlertaResponse,
+    DadosEstacaoResponse,
+    EstacaoListResponse,
+    EstacaoMeteorologica,
     EstadoRead,
     MunicipioListResponse,
     MunicipioRead,
-    EstacaoListResponse,
-    EstacaoMeteorologica,
-    DadosEstacaoResponse,
     ObservacaoMeteorologica,
-    AlertaResponse,
     PublicDataSummary,
 )
+from app.services.public_data import CEMADENClient, IBGEClient, INMETClient
 
 logger = logging.getLogger("cm_techmap.api.public_data")
 

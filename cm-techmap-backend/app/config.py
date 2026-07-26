@@ -65,6 +65,16 @@ class Settings(BaseSettings):
     keycloak_client_secret: str = "cm-techmap-api-dev-secret-2026"
     keycloak_admin_username: str = "admin"
     keycloak_admin_password: str = "admin_dev_2026"
+    # HTTP timeout for Keycloak calls. A cold JVM on constrained hardware
+    # (e.g. the 1 GB OCI Always Free VM) answers the token endpoint in ~14 s;
+    # the previous hardcoded 10 s turned healthy logins into "Serviço de
+    # autenticação indisponível".
+    keycloak_timeout: float = 30.0
+    # Extra base URLs whose tokens are accepted (comma-separated). The internal
+    # and external Keycloak URLs are always accepted; add entries here when a
+    # further hostname reaches the same realm (e.g. a public domain behind a
+    # reverse proxy).
+    keycloak_extra_issuers: str = ""
 
     # ── Upload ───────────────────────────────────────────────────────────────
     upload_chunk_size_mb: int = 50
@@ -147,6 +157,11 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         """Parse CORS origins string into a list."""
         return [origin.strip() for origin in self.app_cors_origins.split(",")]
+
+    @property
+    def keycloak_extra_issuers_list(self) -> list[str]:
+        """Parse the extra accepted issuer base URLs into a list."""
+        return [u.strip() for u in self.keycloak_extra_issuers.split(",") if u.strip()]
 
     @property
     def minio_access_key(self) -> str:

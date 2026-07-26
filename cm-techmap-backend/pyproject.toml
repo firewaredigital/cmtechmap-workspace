@@ -15,7 +15,7 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "gunicorn>=23.0.0",
     "python-multipart>=0.0.12",
-    "pydantic>=2.10.0",
+    "pydantic[email]>=2.10.0",
     "pydantic-settings>=2.6.0",
 
     # ── Database & ORM ─────────────────────────────────────────────────────
@@ -48,6 +48,10 @@ dependencies = [
     # ── Image Analysis (DSM Generation + Building Extraction) ─────────────
     "numpy>=1.26.0",
     "scipy>=1.14.0",
+    # Pillow is imported directly (terrain tile re-encode, Groq vision tiling)
+    "pillow>=10.0.0",
+    # OpenCV powers morphological cleanup in pool detection
+    "opencv-python-headless>=4.10.0",
 
     # ── Point Cloud Processing (Phase 4 — LAZ → Gaussian Splat) ──────────
     "laspy[lazrs]>=2.5.0",
@@ -85,18 +89,47 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+[tool.setuptools.package-data]
+# Report templates must ship with the package — without this a wheel/sdist
+# install produces TemplateNotFound and silently degrades to placeholder PDFs.
+app = ["templates/**/*.html"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "A", "SIM"]
-ignore = ["E501"]
+ignore = [
+    "E501",
+    # HTTPException re-raises inside except blocks are idiomatic FastAPI;
+    # chaining (`from e`) is encouraged but not enforced repo-wide.
+    "B904",
+    # (str, Enum) → StrEnum changes str(member) semantics ("X.a" vs "a");
+    # several enums are serialized/logged, so the rewrite is not safe.
+    "UP042",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI dependency-injection calls are intentionally evaluated in defaults.
+extend-immutable-calls = [
+    "fastapi.Depends", "fastapi.Query", "fastapi.File", "fastapi.Form",
+    "fastapi.Body", "fastapi.Header", "fastapi.Path", "fastapi.Cookie",
+    "fastapi.Security",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Deliberate late imports: middleware/metrics after app creation, beat
+# schedule after celery_app configuration.
+"app/main.py" = ["E402"]
+"app/celery_app.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
-plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
+# NOTE: sqlalchemy.ext.mypy.plugin was removed in SQLAlchemy 2.x —
+# SQLAlchemy 2.0 typing works natively with mypy.
+plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

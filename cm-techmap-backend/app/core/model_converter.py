@@ -18,13 +18,12 @@ This module handles:
   4. Model metadata extraction (vertex count, triangle count, bbox)
 """
 
-import json
 import logging
 import os
 import shutil
 import subprocess
 import zipfile
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -199,7 +198,7 @@ def compute_model_offset(obj_path: str | Path) -> ModelOffset:
     vertices_y = []
     vertices_z = []
 
-    with open(obj_path, "r") as f:
+    with open(obj_path) as f:
         for line in f:
             if line.startswith("v "):
                 parts = line.strip().split()
@@ -382,7 +381,7 @@ def get_model_metadata(
     # Try to extract geometry stats
     if model_path.suffix.lower() == ".obj":
         # Parse OBJ for quick stats
-        with open(model_path, "r") as f:
+        with open(model_path) as f:
             for line in f:
                 if line.startswith("v "):
                     vertex_count += 1

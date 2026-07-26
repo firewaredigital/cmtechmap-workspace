@@ -8,9 +8,8 @@ from typing import Any
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db_session, get_public_db_session, get_direct_db_session
-from app.core.security import get_current_user_from_request, check_roles
-
+from app.core.database import get_db_session, get_direct_db_session, get_public_db_session
+from app.core.security import check_roles, get_current_user_from_request
 
 # ── Database dependencies ─────────────────────────────────────────────────────
 

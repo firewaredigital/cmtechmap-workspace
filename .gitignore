@@ -6,7 +6,20 @@
 .env.production
 .env.local
 .env.*.local
+.env.oci
 docker/nginx/ssl/
+
+# ── All-in-one deployment runtime state (machine-local, has live URLs) ───────
+# NOTE: .env.single and .state/ are still tracked from earlier commits —
+# untrack them with `git rm --cached` when convenient; these rules stop new
+# churn from being staged.
+deploy/all-in-one/.state/
+deploy/all-in-one/.env.single
+
+# ── Terraform state (contains sensitive values) ──────────────────────────────
+oci-deploy/terraform/.terraform/
+oci-deploy/terraform/terraform.tfstate*
+oci-deploy/terraform/terraform.tfvars
 
 # ── Build Artifacts ───────────────────────────────────────────────────────────
 cm-techmap-frontend/dist/

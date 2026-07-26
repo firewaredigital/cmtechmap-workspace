@@ -11,8 +11,10 @@ echo "║  CM TECHMAP — Production Deployment                             ║"
 echo "╚══════════════════════════════════════════════════════════════════╝"
 
 # ── Pre-flight checks ────────────────────────────────────────────────────────
+# NOTE: `command -v "docker compose"` always fails (command -v takes a single
+# word) — the compose plugin must be probed by invoking it.
 command -v docker >/dev/null 2>&1 || { echo "❌ Docker not installed"; exit 1; }
-command -v docker compose >/dev/null 2>&1 || { echo "❌ Docker Compose not installed"; exit 1; }
+docker compose version >/dev/null 2>&1 || { echo "❌ Docker Compose (plugin v2) not installed"; exit 1; }
 
 # ── Step 1: Generate secrets if needed ────────────────────────────────────────
 ENV_FILE=".env.production"
@@ -40,8 +42,24 @@ docker compose -f docker-compose.prod.yml --env-file "$ENV_FILE" up -d
 echo "⏳ Waiting for services to become healthy..."
 sleep 15
 
+# Compose v2 emits NDJSON (one JSON object per line), not a single document.
 for service in postgres redis minio backend frontend nginx; do
-    status=$(docker compose -f docker-compose.prod.yml ps --format json "$service" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Health','unknown'))" 2>/dev/null || echo "unknown")
+    status=$(docker compose -f docker-compose.prod.yml ps --format json "$service" 2>/dev/null \
+        | python3 -c "
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+        print(d.get('Health') or d.get('State', 'unknown'))
+        break
+    except json.JSONDecodeError:
+        continue
+else:
+    print('unknown')
+" 2>/dev/null || echo "unknown")
     echo "  $service: $status"
 done
 
@@ -63,7 +81,7 @@ echo "  🌐 Application: https://${DOMAIN}"
 echo "  📊 Grafana:      https://${DOMAIN}/grafana/"
 echo "  🔧 Flower:       https://${DOMAIN}/flower/"
 echo "  📡 API Docs:     https://${DOMAIN}/docs"
-echo "  🔑 Keycloak:     https://${DOMAIN}:18080"
+echo "  🔑 Keycloak:     https://${DOMAIN}/realms/cm-techmap (admin console: SSH tunnel to 127.0.0.1:18080)"
 echo ""
 echo "  📦 Backup:       Daily at 3:00 AM (configurable)"
 echo "  📈 Metrics:      Prometheus → Grafana"

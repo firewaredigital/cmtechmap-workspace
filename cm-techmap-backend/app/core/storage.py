@@ -3,6 +3,7 @@ CM TECHMAP — MinIO Object Storage Client
 Wrapper around the MinIO Python SDK for file operations.
 """
 
+import contextlib
 import logging
 from datetime import timedelta
 from typing import BinaryIO
@@ -63,10 +64,8 @@ def compose_parts(bucket: str, object_name: str, part_keys: list[str]) -> str:
     sources = [ComposeSource(bucket, key) for key in part_keys]
     client.compose_object(bucket, object_name, sources)
     for key in part_keys:
-        try:
+        with contextlib.suppress(S3Error):
             client.remove_object(bucket, key)
-        except S3Error:
-            pass
     return object_name
 
 

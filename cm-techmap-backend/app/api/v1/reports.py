@@ -3,26 +3,26 @@ CM TECHMAP — Reports API
 Endpoints for generating, listing, and downloading reports.
 """
 
-import uuid
 import logging
-from datetime import timedelta
+import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.core.database import get_db_session
 from app.core.storage import get_minio_client
-from app.config import get_settings
-from app.dependencies import require_super_admin
+from app.dependencies import require_gestor, require_super_admin, require_viewer
 from app.schemas.report import (
-    ReportGenerateRequest,
-    ReportRead,
-    ReportListResponse,
-    ReportConfigPresetResponse,
     ReportConfigPreset,
+    ReportConfigPresetResponse,
     ReportConfigPresetUpsertRequest,
+    ReportGenerateRequest,
+    ReportListResponse,
+    ReportRead,
 )
 
 logger = logging.getLogger("cm_techmap.api.reports")
@@ -152,6 +152,7 @@ def _resolve_report_config(
 @router.get("/config/presets", response_model=ReportConfigPresetResponse)
 async def list_report_config_presets(
     session: AsyncSession = Depends(get_db_session),
+    user: dict[str, Any] = Depends(require_viewer),
 ):
     """Expose supported fiscal/QA presets used by advanced report generation."""
     preset_map = await _effective_presets(session)
@@ -286,6 +287,7 @@ async def deactivate_report_config_preset(
 async def generate_report(
     request: ReportGenerateRequest,
     session: AsyncSession = Depends(get_db_session),
+    user: dict[str, Any] = Depends(require_gestor),
 ):
     """
     Request generation of a new report.
@@ -293,6 +295,7 @@ async def generate_report(
     Returns immediately with the report record (status: pending).
     """
     report_id = str(uuid.uuid4())
+    requested_by = str(user.get("email") or user.get("sub") or "unknown")
 
     # Verify project exists
     result = await session.execute(
@@ -306,8 +309,8 @@ async def generate_report(
     # Create report record
     await session.execute(
         text("""
-            INSERT INTO public.reports (id, project_id, title, report_type, output_format, status)
-            VALUES (:id, :pid, :title, :rtype, :fmt, 'pending')
+            INSERT INTO public.reports (id, project_id, title, report_type, output_format, status, requested_by)
+            VALUES (:id, :pid, :title, :rtype, :fmt, 'pending', :requested_by)
         """),
         {
             "id": report_id,
@@ -315,6 +318,7 @@ async def generate_report(
             "title": request.title,
             "rtype": request.report_type,
             "fmt": request.output_format,
+            "requested_by": requested_by,
         },
     )
     await session.commit()
@@ -348,6 +352,7 @@ async def generate_report(
 
     logger.info(f"Report {report_id} queued (celery={task.id})")
 
+    now = datetime.now(UTC)
     return ReportRead(
         id=uuid.UUID(report_id),
         project_id=request.project_id,
@@ -358,11 +363,11 @@ async def generate_report(
         celery_task_id=task.id,
         file_key=None,
         file_size_bytes=None,
-        requested_by=None,
+        requested_by=requested_by,
         error_message=None,
         download_url=None,
-        created_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
-        updated_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        created_at=now,
+        updated_at=now,
     )
 
 
@@ -373,6 +378,7 @@ async def list_reports(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(get_db_session),
+    user: dict[str, Any] = Depends(require_viewer),
 ):
     """List reports with optional filtering by project and status."""
     conditions = []
@@ -444,6 +450,7 @@ async def list_reports(
 async def get_report(
     report_id: uuid.UUID,
     session: AsyncSession = Depends(get_db_session),
+    user: dict[str, Any] = Depends(require_viewer),
 ):
     """Get report details with download URL (if completed)."""
     result = await session.execute(
@@ -488,6 +495,7 @@ async def get_report(
 async def delete_report(
     report_id: uuid.UUID,
     session: AsyncSession = Depends(get_db_session),
+    user: dict[str, Any] = Depends(require_gestor),
 ):
     """Delete a report and its file from MinIO."""
     result = await session.execute(

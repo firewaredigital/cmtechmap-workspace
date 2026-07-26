@@ -12,10 +12,29 @@
 set -euo pipefail
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
+ENV_FILE="${ENV_FILE:-.env.production}"
 BACKUP_BUCKET="${BACKUP_BUCKET:-cm-techmap-backups}"
+RESTORE_TARGET="${1:-latest}"
+
+# Load credentials from the env file when present (POSTGRES_USER etc.)
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+fi
 POSTGRES_USER="${POSTGRES_USER:-cm_techmap}"
 POSTGRES_DB="${POSTGRES_DB:-cm_techmap}"
-RESTORE_TARGET="${1:-latest}"
+MINIO_ROOT_USER="${MINIO_ROOT_USER:-cm_techmap_admin}"
+MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-}"
+
+# mc lives in the `backup` service container (the MinIO *server* image has no
+# mc binary and its /data layout is not plain files). All bucket operations
+# go through it.
+mc_in_backup() {
+    docker compose -f "$COMPOSE_FILE" exec -T backup sh -c \
+        "mc alias set r http://minio:9000 '$MINIO_ROOT_USER' '$MINIO_ROOT_PASSWORD' >/dev/null 2>&1 && $1"
+}
 
 echo "╔══════════════════════════════════════════════════════════════════╗"
 echo "║  CM TECHMAP — Disaster Recovery Restore                        ║"
@@ -40,11 +59,11 @@ BACKUP_FILE=""
 
 if [ "$RESTORE_TARGET" = "latest" ]; then
     echo "[1/6] Finding latest backup in MinIO..."
-    BACKUP_FILE=$(docker compose -f "$COMPOSE_FILE" exec -T minio mc ls /data/$BACKUP_BUCKET/ 2>/dev/null \
-        | grep ".sql.gz" | sort | tail -1 | awk '{print $NF}')
-    
-    if [ -z "$BACKUP_FILE" ]; then
-        echo "❌ No backup files found in MinIO bucket '$BACKUP_BUCKET'"
+    BACKUP_NAME=$(mc_in_backup "mc ls r/$BACKUP_BUCKET/database/" 2>/dev/null \
+        | grep ".sql.gz" | sort | tail -1 | awk '{print $NF}') || BACKUP_NAME=""
+
+    if [ -z "$BACKUP_NAME" ]; then
+        echo "❌ No backup files found in MinIO bucket '$BACKUP_BUCKET/database'"
         echo "   Trying local backup directory..."
         BACKUP_FILE=$(ls -t /tmp/cm-techmap-backups/*.sql.gz 2>/dev/null | head -1)
         if [ -z "$BACKUP_FILE" ]; then
@@ -52,9 +71,9 @@ if [ "$RESTORE_TARGET" = "latest" ]; then
             exit 1
         fi
     else
-        echo "   Found: $BACKUP_FILE"
+        echo "   Found: $BACKUP_NAME"
         echo "   Downloading from MinIO..."
-        docker compose -f "$COMPOSE_FILE" exec -T minio mc cp "/data/$BACKUP_BUCKET/$BACKUP_FILE" /tmp/restore.sql.gz
+        mc_in_backup "mc cat r/$BACKUP_BUCKET/database/$BACKUP_NAME" > /tmp/restore.sql.gz
         BACKUP_FILE="/tmp/restore.sql.gz"
     fi
 elif [ -f "$RESTORE_TARGET" ]; then
@@ -62,16 +81,16 @@ elif [ -f "$RESTORE_TARGET" ]; then
 else
     # Search by date pattern
     echo "[1/6] Searching for backup matching: $RESTORE_TARGET"
-    BACKUP_FILE=$(docker compose -f "$COMPOSE_FILE" exec -T minio mc ls /data/$BACKUP_BUCKET/ 2>/dev/null \
-        | grep "$RESTORE_TARGET" | grep ".sql.gz" | sort | tail -1 | awk '{print $NF}')
-    
-    if [ -z "$BACKUP_FILE" ]; then
+    BACKUP_NAME=$(mc_in_backup "mc ls r/$BACKUP_BUCKET/database/" 2>/dev/null \
+        | grep "$RESTORE_TARGET" | grep ".sql.gz" | sort | tail -1 | awk '{print $NF}') || BACKUP_NAME=""
+
+    if [ -z "$BACKUP_NAME" ]; then
         echo "❌ No backup found matching '$RESTORE_TARGET'"
         exit 1
     fi
-    
-    echo "   Found: $BACKUP_FILE"
-    docker compose -f "$COMPOSE_FILE" exec -T minio mc cp "/data/$BACKUP_BUCKET/$BACKUP_FILE" /tmp/restore.sql.gz
+
+    echo "   Found: $BACKUP_NAME"
+    mc_in_backup "mc cat r/$BACKUP_BUCKET/database/$BACKUP_NAME" > /tmp/restore.sql.gz
     BACKUP_FILE="/tmp/restore.sql.gz"
 fi
 
@@ -100,10 +119,11 @@ docker compose -f "$COMPOSE_FILE" exec -T postgres psql -U "$POSTGRES_USER" -d p
 docker compose -f "$COMPOSE_FILE" exec -T postgres psql -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE IF EXISTS $POSTGRES_DB;"
 docker compose -f "$COMPOSE_FILE" exec -T postgres psql -U "$POSTGRES_USER" -d postgres -c "CREATE DATABASE $POSTGRES_DB OWNER $POSTGRES_USER;"
 
-# Re-enable extensions
+# Re-enable extensions (must match docker/postgres/init-scripts)
 docker compose -f "$COMPOSE_FILE" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
     CREATE EXTENSION IF NOT EXISTS postgis;
     CREATE EXTENSION IF NOT EXISTS postgis_topology;
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
     CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
     CREATE EXTENSION IF NOT EXISTS pgcrypto;
 "

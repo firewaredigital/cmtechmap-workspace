@@ -3,13 +3,13 @@ CM TECHMAP — Prometheus Metrics Middleware
 Exposes request count, latency histogram, and active connections for monitoring.
 """
 
-import time
 import logging
+import time
 from collections import defaultdict
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response, PlainTextResponse
+from starlette.responses import Response
 
 logger = logging.getLogger("cm_techmap.metrics")
 

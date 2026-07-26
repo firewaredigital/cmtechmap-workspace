@@ -3,11 +3,8 @@ CM TECHMAP — API Endpoint Tests
 Tests the core CRUD endpoints and their contract compliance.
 """
 
+
 import pytest
-from unittest.mock import patch, AsyncMock
-
-from tests.conftest import mock_auth
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HEALTH ENDPOINTS
@@ -73,7 +70,6 @@ class TestAdminEndpoints:
     """Test admin API contract and authorization."""
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="Event loop contamination from Keycloak tests — passes in isolation")
     async def test_list_tenants_requires_auth(self, client):
         """Unauthenticated request should not return tenant data."""
         response = await client.get("/api/v1/admin/tenants")
@@ -91,7 +87,6 @@ class TestAdminEndpoints:
         assert response.status_code in (401, 403)
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="Event loop contamination from Keycloak tests — passes in isolation")
     async def test_list_subscriptions_requires_auth(self, client):
         response = await client.get("/api/v1/admin/subscriptions")
         if response.status_code == 200:
@@ -106,7 +101,6 @@ class TestAdminEndpoints:
         assert response.status_code in (401, 403)
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="Event loop contamination from Keycloak tests — passes in isolation")
     async def test_tenant_quota_requires_auth(self, client):
         response = await client.get("/api/v1/admin/tenants/goiania/quota")
         # Quota endpoint requires super_admin
@@ -176,7 +170,6 @@ class TestReportEndpoints:
     """Test report endpoint contracts."""
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="Event loop contamination from Keycloak tests — passes in isolation")
     async def test_list_reports_returns_200_or_auth(self, client):
         response = await client.get("/api/v1/reports")
         # Reports list may be public or require auth depending on middleware

@@ -3,8 +3,7 @@ CM TECHMAP — Configuration Tests
 Tests that the settings module loads correctly and validates critical settings.
 """
 
-import pytest
-from app.config import get_settings, Settings
+from app.config import get_settings
 
 
 def test_settings_load():
@@ -90,3 +89,33 @@ def test_settings_groq_tiling_fairness_and_telemetry_defaults():
     assert settings.groq_fairness_entity_min_tpm >= 100
     assert isinstance(settings.groq_telemetry_prefix, str)
     assert settings.groq_telemetry_prefix
+
+
+class TestAcceptedIssuers:
+    """
+    Keycloak derives `iss` from the URL used to reach it. The backend talks to
+    it over the internal Docker network while browsers use the public URL, so
+    both must be accepted — otherwise every authenticated request 401s with
+    "Invalid issuer" (this is what silently broke the whole API on the OCI VM).
+    """
+
+    def test_internal_and_external_issuers_are_accepted(self):
+        from app.config import get_settings
+        from app.core.security import _accepted_issuers
+
+        s = get_settings()
+        accepted = _accepted_issuers()
+
+        assert f"{s.keycloak_server_url}/realms/{s.keycloak_realm}" in accepted
+        assert f"{s.keycloak_external_url}/realms/{s.keycloak_realm}" in accepted
+
+    def test_extra_issuers_are_parsed(self):
+        from app.config import Settings
+
+        s = Settings(keycloak_extra_issuers="https://a.example, https://b.example")
+        assert s.keycloak_extra_issuers_list == ["https://a.example", "https://b.example"]
+
+    def test_extra_issuers_default_to_empty(self):
+        from app.config import Settings
+
+        assert Settings().keycloak_extra_issuers_list == []

@@ -8,7 +8,6 @@ Produces risk maps based on:
 - Terrain drainage analysis
 """
 
-import json
 import logging
 from typing import Any
 
@@ -42,25 +41,22 @@ class DisasterPreventionService:
     ) -> dict[str, Any]:
         """
         Compute slope-based landslide risk from a DSM raster.
-        
+
         Args:
             dsm_path: Path to DSM GeoTIFF
             cell_size_m: Resolution of the raster in meters
             landslide_threshold_deg: Slope angle above which landslide risk begins
             high_risk_threshold_deg: Slope angle for very high risk
-            
+
         Returns:
             Risk analysis results with zone counts and GeoJSON features
         """
         import rasterio
-        from rasterio.transform import rowcol
 
         logger.info(f"[DISASTER] Analyzing slope risk from {dsm_path}")
 
         with rasterio.open(dsm_path) as src:
             elevation = src.read(1).astype(np.float64)
-            transform = src.transform
-            crs = src.crs
             nodata = src.nodata
 
         # Mask nodata
@@ -119,7 +115,7 @@ class DisasterPreventionService:
     ) -> dict[str, Any]:
         """
         Compute flood risk zones from DSM elevation data.
-        
+
         Identifies areas below specified flood elevation thresholds.
         If no base flood elevation is provided, uses the lowest terrain
         + standard flood stage increments.

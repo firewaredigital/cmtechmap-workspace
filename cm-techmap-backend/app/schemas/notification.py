@@ -6,6 +6,7 @@ Pydantic models for in-app notifications.
 import uuid
 from datetime import datetime
 from enum import Enum
+
 from pydantic import BaseModel, Field
 
 

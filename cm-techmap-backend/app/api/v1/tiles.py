@@ -104,6 +104,10 @@ async def list_raster_assets(
     assets = []
     for r in result.fetchall():
         assets.append({
+            # `asset_id` is the canonical name across the API (flight assets,
+            # /raster/{id}/info, /terrain/*, /models/*). `id` is kept as an
+            # alias so older clients keep working.
+            "asset_id": str(r[0]),
             "id": str(r[0]),
             "file_key": r[1],
             "resolution_cm": r[2],
@@ -254,8 +258,9 @@ def _flat_dem_tile() -> Response:
     global _FLAT_DEM_TILE_CACHE
     if _FLAT_DEM_TILE_CACHE is None:
         import io
-        from PIL import Image
+
         import numpy as np
+        from PIL import Image
 
         # Elevation 0 → Terrarium value = 32768 → R=128, G=0, B=0
         flat = np.zeros((256, 256, 3), dtype=np.uint8)
@@ -379,8 +384,9 @@ async def get_terrain_tile(
                 if base_elevation > 10.0 or dsm_source == "synthetic":
                     try:
                         import io
-                        from PIL import Image
+
                         import numpy as np
+                        from PIL import Image
 
                         # Decode Terrarium PNG → elevation array
                         img = Image.open(io.BytesIO(resp.content)).convert("RGB")

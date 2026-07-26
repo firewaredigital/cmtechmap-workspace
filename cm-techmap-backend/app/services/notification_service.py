@@ -5,7 +5,7 @@ Manages in-app notifications with DB persistence and Redis PubSub for real-time 
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import text
@@ -66,7 +66,7 @@ class NotificationService:
                 "category": category,
                 "link": link,
                 "is_read": False,
-                "created_at": row[1].isoformat() if row[1] else datetime.now(timezone.utc).isoformat(),
+                "created_at": row[1].isoformat() if row[1] else datetime.now(UTC).isoformat(),
             }
 
             # Push to Redis PubSub for real-time delivery
@@ -223,6 +223,7 @@ async def _publish_notification(user_id: str, notification: dict) -> None:
     """Publish notification via Redis PubSub for WebSocket delivery."""
     try:
         import redis.asyncio as aioredis
+
         from app.config import get_settings
 
         settings = get_settings()

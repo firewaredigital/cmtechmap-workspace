@@ -4,6 +4,7 @@ Extracts tenant_id from JWT and sets the schema context for the request.
 """
 
 import logging
+
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response

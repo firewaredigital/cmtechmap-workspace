@@ -27,7 +27,7 @@ class DengueRiskCategory:
 class DengueHotspotService:
     """
     Detects potential Aedes aegypti breeding sites from aerial imagery.
-    
+
     Methodology:
     1. NDWI (Normalized Difference Water Index) → detect surface water
     2. Terrain depression analysis → find water accumulation zones
@@ -45,7 +45,7 @@ class DengueHotspotService:
     ) -> dict[str, Any]:
         """
         Detect standing water using NDWI from multispectral imagery.
-        
+
         NDWI = (Green - NIR) / (Green + NIR)
         For RGB-only imagery, uses a simplified water detection:
         NDWI_approx = (Green - Red) / (Green + Red)

@@ -3,9 +3,14 @@ CM TECHMAP — Maintenance Tasks
 Scheduled Celery tasks for system maintenance and health monitoring.
 """
 
+import contextlib
+import glob
 import logging
+import os
+import shutil
 import subprocess
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
+from urllib.parse import unquote, urlsplit
 
 from app.celery_app import celery_app
 from app.config import get_settings
@@ -14,46 +19,86 @@ logger = logging.getLogger("cm_techmap.maintenance")
 settings = get_settings()
 
 
+def _database_connection_params() -> dict[str, str]:
+    """
+    Extract host/port/user/password/dbname from the configured database URL.
+
+    The Settings model only exposes URLs (database_url_sync), never the
+    individual components, so shelling out to pg_dump requires parsing.
+    """
+    parsed = urlsplit(settings.database_url_sync)
+    return {
+        "host": parsed.hostname or "localhost",
+        "port": str(parsed.port or 5432),
+        "user": unquote(parsed.username or "postgres"),
+        "password": unquote(parsed.password or ""),
+        "dbname": (parsed.path or "/postgres").lstrip("/") or "postgres",
+    }
+
+
 @celery_app.task(name="app.tasks.maintenance.backup_database", bind=True, max_retries=2)
 def backup_database(self):
     """Create a compressed database backup and upload to MinIO."""
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     backup_file = f"/tmp/cm_techmap_backup_{timestamp}.sql.gz"
 
+    if shutil.which("pg_dump") is None:
+        logger.error(
+            "[BACKUP] pg_dump is not installed in this container — "
+            "database backups are NOT being taken"
+        )
+        return {"status": "skipped", "reason": "pg_dump not installed"}
+
+    conn = _database_connection_params()
+
     try:
-        # pg_dump → gzip
+        # pg_dump (plain SQL) → gzip; plain format restores with `gunzip | psql`
         cmd = (
-            f"PGPASSWORD={settings.database_password} "
-            f"pg_dump -h {settings.database_host} -p {settings.database_port} "
-            f"-U {settings.database_user} -d {settings.database_name} "
+            f"pg_dump -h {conn['host']} -p {conn['port']} "
+            f"-U {conn['user']} -d {conn['dbname']} "
             f"--format=plain --no-owner --no-privileges | gzip > {backup_file}"
         )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=1800)
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=1800,
+            env={**os.environ, "PGPASSWORD": conn["password"]},
+        )
 
         if result.returncode != 0:
             logger.error(f"[BACKUP] pg_dump failed: {result.stderr}")
             raise self.retry(countdown=300, exc=Exception(result.stderr))
 
-        # Upload to MinIO via mc or boto3
-        import os
         file_size = os.path.getsize(backup_file)
         logger.info(f"[BACKUP] Created: {backup_file} ({file_size / 1024 / 1024:.1f} MB)")
 
-        # Try uploading via MinIO client
+        # Upload via the MinIO SDK (no mc/aws CLI dependency)
         try:
-            upload_cmd = (
-                f"mc cp {backup_file} minio/cm-techmap-backups/ 2>/dev/null || "
-                f"aws --endpoint-url http://{settings.minio_endpoint} "
-                f"s3 cp {backup_file} s3://cm-techmap-backups/"
+            from app.core.storage import upload_file
+
+            object_name = os.path.basename(backup_file)
+            with open(backup_file, "rb") as fh:
+                upload_file(
+                    settings.minio_bucket_backups,
+                    f"postgres/{object_name}",
+                    fh,
+                    file_size,
+                    content_type="application/gzip",
+                )
+            logger.info(
+                f"[BACKUP] Uploaded to MinIO: "
+                f"{settings.minio_bucket_backups}/postgres/{object_name}"
             )
-            subprocess.run(upload_cmd, shell=True, timeout=600)
-            logger.info(f"[BACKUP] Uploaded to MinIO: cm-techmap-backups/{os.path.basename(backup_file)}")
         except Exception as e:
             logger.warning(f"[BACKUP] MinIO upload failed (backup still on disk): {e}")
 
         # Cleanup old local backups (keep last 5)
-        cleanup_cmd = "ls -t /tmp/cm_techmap_backup_*.sql.gz | tail -n +6 | xargs rm -f 2>/dev/null"
-        subprocess.run(cleanup_cmd, shell=True)
+        local_backups = sorted(
+            glob.glob("/tmp/cm_techmap_backup_*.sql.gz"),
+            key=os.path.getmtime,
+            reverse=True,
+        )
+        for stale in local_backups[5:]:
+            with contextlib.suppress(OSError):
+                os.remove(stale)
 
         return {"status": "success", "file": backup_file, "size_mb": round(file_size / 1024 / 1024, 1)}
 
@@ -73,12 +118,12 @@ def cleanup_expired_uploads():
     engine = create_engine(settings.database_url_sync)
     try:
         with engine.connect() as conn:
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-            # Find all tenant schemas
+            cutoff = datetime.now(UTC) - timedelta(hours=24)
+            # public first (chunked uploads live there), then tenant schemas
             result = conn.execute(text(
                 "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'tenant_%'"
             ))
-            schemas = [row[0] for row in result.fetchall()]
+            schemas = ["public"] + [row[0] for row in result.fetchall()]
             total_cleaned = 0
             for schema in schemas:
                 try:
@@ -135,22 +180,15 @@ def cleanup_old_notifications():
     engine = create_engine(settings.database_url_sync)
     try:
         with engine.connect() as conn:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-            result = conn.execute(text(
-                "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'tenant_%'"
-            ))
-            schemas = [row[0] for row in result.fetchall()]
-            total = 0
-            for schema in schemas:
-                try:
-                    res = conn.execute(text(
-                        f'DELETE FROM "{schema}".activity_logs '
-                        f"WHERE action = 'notification' AND created_at < :cutoff "
-                        f"RETURNING id"
-                    ), {"cutoff": cutoff})
-                    total += len(res.fetchall())
-                except Exception:
-                    pass
+            cutoff = datetime.now(UTC) - timedelta(days=30)
+            # Notifications live in public.notifications (see Alembic 003);
+            # tenant schemas intentionally have no notifications table.
+            res = conn.execute(text(
+                "DELETE FROM public.notifications "
+                "WHERE is_read = true AND created_at < :cutoff "
+                "RETURNING id"
+            ), {"cutoff": cutoff})
+            total = len(res.fetchall())
             conn.commit()
             logger.info(f"[NOTIF-CLEANUP] Removed {total} old notifications")
             return {"cleaned": total}

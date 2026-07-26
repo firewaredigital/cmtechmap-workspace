@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libproj-dev \
     gdal-bin \
     curl \
+    # pg_dump for the scheduled database backup task
+    postgresql-client \
     # WeasyPrint dependencies (PDF generation)
     libcairo2 \
     libpango-1.0-0 \

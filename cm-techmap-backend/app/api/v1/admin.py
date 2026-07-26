@@ -1,19 +1,43 @@
 """CM TECHMAP — Admin Routes (Enhanced with Lifecycle + Quota Management)"""
 
 from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dependencies import get_public_db, require_super_admin, require_tenant_admin
+from app.schemas.tenant import SubscriptionRead, TenantCreate, TenantRead
+from app.schemas.user_management import RoleResponse
+from app.services.keycloak_admin import KeycloakAdminError, keycloak_admin
 from app.services.tenant_lifecycle import (
-    provision_tenant, migrate_tenant_schema, migrate_all_tenants,
-    deactivate_tenant, reactivate_tenant, get_tenant_stats, SCHEMA_VERSION,
+    SCHEMA_VERSION,
+    deactivate_tenant,
+    get_tenant_stats,
+    migrate_all_tenants,
+    migrate_tenant_schema,
+    provision_tenant,
+    reactivate_tenant,
 )
 from app.services.tenant_quota import get_tenant_quota
-from app.dependencies import get_public_db, get_current_user, require_super_admin, require_tenant_admin
-from app.schemas.tenant import TenantCreate, TenantRead, SubscriptionRead
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PLATFORM ROLES
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/roles", response_model=list[RoleResponse])
+async def list_platform_roles(
+    user: dict[str, Any] = Depends(require_super_admin),
+):
+    """List all platform roles from Keycloak (admin portal view)."""
+    try:
+        roles = await keycloak_admin.get_available_roles()
+        return [RoleResponse(**r) for r in roles]
+    except KeycloakAdminError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -271,12 +295,12 @@ async def upgrade_subscription(
     user: dict[str, Any] = Depends(require_super_admin),
 ):
     """Upgrade a tenant's subscription plan."""
-    PLAN_LIMITS = {
+    plan_limits = {
         "starter": {"max_users": 5, "max_storage_tb": 1.0, "max_projects": 10, "price": 0},
         "professional": {"max_users": 25, "max_storage_tb": 5.0, "max_projects": 50, "price": 2990},
         "enterprise": {"max_users": 999, "max_storage_tb": 50.0, "max_projects": 999, "price": 9990},
     }
-    limits = PLAN_LIMITS.get(plan)
+    limits = plan_limits.get(plan)
     if not limits:
         raise HTTPException(status_code=400, detail=f"Unknown plan: {plan}")
 

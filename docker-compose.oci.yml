@@ -207,6 +207,8 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.3
     container_name: cmo-keycloak
+    # tini as PID 1 reaps the cat/grep orphans left by the health probe
+    init: true
     restart: always
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
@@ -215,7 +217,7 @@ services:
       KC_DB_URL: jdbc:postgresql://postgres:5432/${KC_POSTGRES_DB:-keycloak}
       KC_DB_USERNAME: ${POSTGRES_USER:-cm_techmap_oci}
       KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
-      KC_HOSTNAME: ${DOMAIN_NAME:+https://${DOMAIN_NAME}/auth}
+      KC_HOSTNAME: ${DOMAIN_NAME:+https://${DOMAIN_NAME}}
       KC_HTTP_ENABLED: "true"
       KC_HOSTNAME_STRICT: "false"
       KC_PROXY_HEADERS: xforwarded
@@ -234,7 +236,7 @@ services:
     networks:
       - cm-network
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '\"status\":\"UP\"'"]
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '\"status\": *\"UP\"' <&3"]
       interval: 20s
       timeout: 10s
       retries: 15
@@ -284,7 +286,7 @@ services:
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
       - MINIO_USE_SSL=false
       - KEYCLOAK_SERVER_URL=http://keycloak:8080
-      - KEYCLOAK_EXTERNAL_URL=${DOMAIN_NAME:+https://${DOMAIN_NAME}/auth}
+      - KEYCLOAK_EXTERNAL_URL=${DOMAIN_NAME:+https://${DOMAIN_NAME}}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-cm-techmap}
       - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-cm-techmap-api}
       - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
@@ -332,7 +334,7 @@ services:
         --loglevel=info
         --concurrency=${CELERY_CONCURRENCY:-2}
         --autoscale=${CELERY_AUTOSCALE:-4,1}
-        --queues=default,processing,reports
+        --queues=default,processing,reports,ai_llm
         --max-tasks-per-child=200
         -n worker@%h
     environment:
@@ -450,7 +452,7 @@ services:
     networks:
       - cm-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -483,7 +485,7 @@ services:
     networks:
       - cm-network
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/nginx-health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/nginx-health"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -546,6 +548,7 @@ services:
       - "127.0.0.1:9090:9090"
     volumes:
       - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
       - /data/prometheus:/prometheus
     networks:
       - cm-network

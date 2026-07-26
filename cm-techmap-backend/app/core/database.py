@@ -91,7 +91,7 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     tenant_schema = current_tenant_schema.get()
 
     bind_engine = engine.execution_options(schema_translate_map={None: tenant_schema}) if tenant_schema else engine
-    
+
     from sqlalchemy import text
     async with async_session_factory(bind=bind_engine) as session:
         try:
@@ -130,7 +130,6 @@ async def get_direct_db_session() -> AsyncGenerator[AsyncSession, None]:
     FastAPI dependency for DDL operations that bypass PgBouncer.
     Use for: CREATE SCHEMA, ALTER TABLE, CREATE INDEX, RLS policies.
     """
-    from sqlalchemy import text
     async with async_session_direct_factory() as session:
         try:
             yield session

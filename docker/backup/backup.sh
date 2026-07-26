@@ -39,15 +39,17 @@ log "║  CM TECHMAP — Backup Starting                               ║"
 log "╚══════════════════════════════════════════════════════════════╝"
 
 # ── Step 1: Main database backup ─────────────────────────────────────────────
+# Plain-format SQL piped through gzip: the .sql.gz name is then accurate and
+# the restore path (scripts/restore-backup.sh: `gunzip -c | psql`) works.
+# The previous custom-format-plus-gzip combo produced a file that NO restore
+# tool could read with the documented commands.
 log "📦 Backing up main database: $POSTGRES_DB"
 pg_dump \
     -h "$POSTGRES_HOST" \
     -p "$POSTGRES_PORT" \
     -U "$POSTGRES_USER" \
     -d "$POSTGRES_DB" \
-    --format=custom \
-    --compress=9 \
-    --verbose \
+    --format=plain \
     --no-owner \
     --no-privileges \
     --exclude-table-data='*.celery_*' \
@@ -65,8 +67,7 @@ pg_dump \
     -p "$POSTGRES_PORT" \
     -U "$POSTGRES_USER" \
     -d "$KC_DB" \
-    --format=custom \
-    --compress=9 \
+    --format=plain \
     --no-owner \
     --no-privileges \
     2>/tmp/pgdump_kc.log \
@@ -117,10 +118,11 @@ log "🔄 Rotating backups older than $RETENTION_DAYS days"
 CUTOFF_DATE=$(date -d "-${RETENTION_DAYS} days" +%Y%m%d 2>/dev/null || date -v-${RETENTION_DAYS}d +%Y%m%d)
 
 # List and remove old backups from MinIO
+# (grep -E, not -P: busybox/alpine grep has no PCRE support)
 mc ls "${MC_ALIAS}/${MINIO_BUCKET}/database/" 2>/dev/null | while read -r line; do
     filename=$(echo "$line" | awk '{print $NF}')
     # Extract date from filename (cm_techmap_YYYYMMDD_HHMMSS.sql.gz)
-    file_date=$(echo "$filename" | grep -oP '\d{8}' | head -1)
+    file_date=$(echo "$filename" | grep -oE '[0-9]{8}' | head -1)
     if [ -n "$file_date" ] && [ "$file_date" -lt "$CUTOFF_DATE" ] 2>/dev/null; then
         mc rm "${MC_ALIAS}/${MINIO_BUCKET}/database/${filename}" 2>/dev/null && \
             log "  🗑️  Removed old backup: $filename"

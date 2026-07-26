@@ -23,7 +23,12 @@ APP_SECRET_KEY=$(gen_hex 32)
 POSTGRES_PASSWORD=$(gen_password)
 MINIO_ROOT_PASSWORD=$(gen_password)
 KEYCLOAK_ADMIN_PASSWORD=$(gen_password)
-KEYCLOAK_CLIENT_SECRET=$(gen_hex 32)
+# ⚠️  The client secret MUST match the one imported from
+# docker/keycloak/cm-techmap-realm.json — realm import happens only once, so
+# a random value here silently breaks every backend↔Keycloak call. Rotate it
+# AFTER first boot via the Keycloak admin console (client cm-techmap-api →
+# Credentials → Regenerate) and update this file with the new value.
+KEYCLOAK_CLIENT_SECRET=cm-techmap-api-dev-secret-2026
 GRAFANA_ADMIN_PASSWORD=$(gen_password)
 FLOWER_PASSWORD=$(gen_password)
 
@@ -34,16 +39,15 @@ cat > "$OUTPUT_FILE" << ENVEOF
 # ⚠️  KEEP THIS FILE SECRET — DO NOT COMMIT TO GIT
 # ==============================================================================
 
+# ── Domain (set FIRST — referenced below) ────────────────────────────────────
+DOMAIN_NAME=mapa.suaprefeitura.gov.br
+
 # ── Application ──────────────────────────────────────────────────────────────
 APP_ENV=production
 APP_DEBUG=false
 APP_SECRET_KEY=${APP_SECRET_KEY}
 APP_CORS_ORIGINS=https://\${DOMAIN_NAME}
 API_LOG_LEVEL=warning
-
-# ── Domain ───────────────────────────────────────────────────────────────────
-DOMAIN_NAME=mapa.suaprefeitura.gov.br
-NGINX_PORT=80
 
 # ── PostgreSQL ───────────────────────────────────────────────────────────────
 POSTGRES_DB=cm_techmap
@@ -63,6 +67,8 @@ KEYCLOAK_ADMIN_USERNAME=admin
 KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD}
 KEYCLOAK_REALM=cm-techmap
 KEYCLOAK_CLIENT_ID=cm-techmap-api
+# ⚠️  Matches the imported realm secret. ROTATE after first boot (Keycloak
+# admin console → client cm-techmap-api → Credentials) and update here.
 KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
 
 # ── Grafana ──────────────────────────────────────────────────────────────────

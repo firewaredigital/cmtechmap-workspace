@@ -1,11 +1,22 @@
 """CM TECHMAP — Auth Routes (Keycloak token exchange)"""
 
 import logging
-from fastapi import APIRouter, HTTPException, Request, status
+from typing import Any
+
 import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse, TokenRefreshRequest
+from app.dependencies import get_public_db
+from app.schemas.auth import (
+    LoginRequest,
+    RegisterRequest,
+    SSOExchangeRequest,
+    TokenRefreshRequest,
+    TokenResponse,
+)
+from app.services.audit_log import AuditAction, extract_request_context, write_audit_log
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 settings = get_settings()
@@ -30,12 +41,60 @@ def _decode_jwt_payload(token: str) -> dict:
         return {}
 
 
+def _build_user_info(payload: dict) -> dict[str, Any] | None:
+    """Derive the frontend-facing user object from a decoded access token."""
+    if not payload:
+        return None
+
+    realm_roles = payload.get("realm_access", {}).get("roles", [])
+    role = "viewer"
+    for r in ["super_admin", "tenant_admin", "gestor", "operador", "viewer"]:
+        if r in realm_roles:
+            role = r
+            break
+
+    return {
+        "id": payload.get("sub", ""),
+        "name": payload.get("name", payload.get("preferred_username", "")),
+        "email": payload.get("email", ""),
+        "role": role,
+        "portal": "admin" if role == "super_admin" else "prefeitura",
+    }
+
+
+async def _audit(
+    db: AsyncSession,
+    *,
+    action: str,
+    user_id: str | None,
+    details: dict[str, Any],
+    req_ctx: dict[str, str | None],
+) -> None:
+    """Persist an auth audit entry; never lets audit failures break the flow."""
+    try:
+        await write_audit_log(
+            db,
+            action=action,
+            user_id=user_id,
+            entity_type="auth",
+            details=details,
+            ip_address=req_ctx.get("ip"),
+            user_agent=req_ctx.get("user_agent"),
+        )
+        await db.commit()
+    except Exception as e:
+        logger.warning(f"Audit persistence failed for {action}: {e}")
+
+
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, request: Request):
+async def login(
+    body: LoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_public_db),
+):
     """Authenticate via Keycloak using Resource Owner Password Credentials grant."""
-    from app.services.audit_log import AuditAction, extract_request_context
     req_ctx = extract_request_context(request)
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
         try:
             resp = await client.post(TOKEN_URL, data={
                 "grant_type": "password",
@@ -75,8 +134,14 @@ async def login(body: LoginRequest, request: Request):
         else:
             detail = error_desc or "Falha na autenticação"
 
-        # Audit: log failed login attempt
         logger.info(f"Login failed for {body.email}: {detail}")
+        await _audit(
+            db,
+            action=AuditAction.LOGIN_FAILED,
+            user_id=body.email,
+            details={"reason": detail},
+            req_ctx=req_ctx,
+        )
 
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
 
@@ -84,26 +149,16 @@ async def login(body: LoginRequest, request: Request):
 
     # Extract user info from the JWT to return to the frontend
     payload = _decode_jwt_payload(data["access_token"])
-    user_info = None
-    if payload:
-        realm_roles = payload.get("realm_access", {}).get("roles", [])
-        # Pick the most relevant role (priority order)
-        role = "viewer"
-        for r in ["super_admin", "tenant_admin", "gestor", "operador", "viewer"]:
-            if r in realm_roles:
-                role = r
-                break
+    user_info = _build_user_info(payload)
 
-        user_info = {
-            "id": payload.get("sub", ""),
-            "name": payload.get("name", payload.get("preferred_username", "")),
-            "email": payload.get("email", ""),
-            "role": role,
-            "portal": "admin" if role == "super_admin" else "prefeitura",
-        }
-
-    # Audit: log successful login
     logger.info(f"Login success for {body.email} (sub={payload.get('sub', '?')})")
+    await _audit(
+        db,
+        action=AuditAction.LOGIN,
+        user_id=payload.get("email") or body.email,
+        details={"sub": payload.get("sub", ""), "role": (user_info or {}).get("role", "")},
+        req_ctx=req_ctx,
+    )
 
     return TokenResponse(
         access_token=data["access_token"],
@@ -114,10 +169,64 @@ async def login(body: LoginRequest, request: Request):
     )
 
 
+@router.post("/sso/exchange", response_model=TokenResponse)
+async def sso_exchange(
+    body: SSOExchangeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_public_db),
+):
+    """
+    Exchange an OIDC authorization code (browser SSO flow — e.g. "Entrar com
+    Google" via Keycloak) for platform tokens. The frontend receives ?code=
+    on its /auth/callback route and posts it here.
+    """
+    req_ctx = extract_request_context(request)
+    async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
+        try:
+            resp = await client.post(TOKEN_URL, data={
+                "grant_type": "authorization_code",
+                "client_id": settings.keycloak_client_id,
+                "client_secret": settings.keycloak_client_secret,
+                "code": body.code,
+                "redirect_uri": body.redirect_uri,
+            })
+        except httpx.HTTPError as e:
+            logger.error(f"Keycloak SSO exchange failed: {e}")
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                detail="Serviço de autenticação indisponível")
+
+    if resp.status_code != 200:
+        logger.info(f"SSO code exchange rejected: HTTP {resp.status_code} {resp.text[:200]}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Código de autenticação inválido ou expirado. Tente novamente.",
+        )
+
+    data = resp.json()
+    payload = _decode_jwt_payload(data["access_token"])
+    user_info = _build_user_info(payload)
+
+    await _audit(
+        db,
+        action=AuditAction.LOGIN,
+        user_id=payload.get("email") or payload.get("sub"),
+        details={"sub": payload.get("sub", ""), "method": "sso"},
+        req_ctx=req_ctx,
+    )
+
+    return TokenResponse(
+        access_token=data["access_token"],
+        refresh_token=data.get("refresh_token", ""),
+        token_type="bearer",
+        expires_in=data.get("expires_in", 900),
+        user=user_info,
+    )
+
+
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(body: TokenRefreshRequest):
     """Refresh an expired access token via Keycloak."""
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
         try:
             resp = await client.post(TOKEN_URL, data={
                 "grant_type": "refresh_token",
@@ -136,14 +245,7 @@ async def refresh_token(body: TokenRefreshRequest):
 
     data = resp.json()
     payload = _decode_jwt_payload(data["access_token"])
-    user_info = None
-    if payload:
-        user_info = {
-            "id": payload.get("sub", ""),
-            "name": payload.get("name", ""),
-            "email": payload.get("email", ""),
-            "role": "viewer",
-        }
+    user_info = _build_user_info(payload)
 
     return TokenResponse(
         access_token=data["access_token"],
@@ -186,7 +288,7 @@ async def register(body: RegisterRequest):
         "attributes": {"tenant_id": [body.tenant_slug or "default"]},
     }
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
         # Step 1: Create the user
         resp = await client.post(users_url, json=user_payload,
                                  headers={"Authorization": f"Bearer {admin_token}"})
@@ -213,7 +315,7 @@ async def _assign_viewer_role(admin_token: str, username: str) -> None:
     """Find the new user by username and assign the 'viewer' realm role."""
     base_url = f"{settings.keycloak_server_url}/admin/realms/{settings.keycloak_realm}"
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
         headers = {"Authorization": f"Bearer {admin_token}"}
 
         # Find user by username
@@ -245,7 +347,7 @@ async def _get_admin_token() -> str | None:
     """Get a Keycloak admin access token for user management operations."""
     admin_token_url = f"{settings.keycloak_server_url}/realms/master/protocol/openid-connect/token"
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
             resp = await client.post(admin_token_url, data={
                 "grant_type": "password",
                 "client_id": "admin-cli",

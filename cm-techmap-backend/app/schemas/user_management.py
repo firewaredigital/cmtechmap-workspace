@@ -1,8 +1,6 @@
 """CM TECHMAP — User Management Schemas"""
 
-from datetime import datetime
-from typing import Optional
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
 class UserCreateRequest(BaseModel):
@@ -18,12 +16,12 @@ class UserCreateRequest(BaseModel):
 
 class UserUpdateRequest(BaseModel):
     """Request to update a user."""
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    email: Optional[str] = None
-    enabled: Optional[bool] = None
-    department: Optional[str] = None
-    tenant_id: Optional[str] = None
+    first_name: str | None = None
+    last_name: str | None = None
+    email: str | None = None
+    enabled: bool | None = None
+    department: str | None = None
+    tenant_id: str | None = None
 
 
 class UserRoleChangeRequest(BaseModel):
@@ -51,7 +49,7 @@ class UserResponse(BaseModel):
     all_roles: list[str]
     tenant_id: str
     department: str
-    created_at: Optional[int] = None
+    created_at: int | None = None
     totp_enabled: bool = False
     active_sessions: int = 0
 

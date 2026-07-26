@@ -1,6 +1,6 @@
 """CM TECHMAP — Project Model (public schema)"""
 
-from sqlalchemy import Boolean, Float, Integer, String, Text, Index
+from sqlalchemy import Boolean, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin

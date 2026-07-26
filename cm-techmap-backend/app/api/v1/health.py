@@ -1,8 +1,9 @@
 """CM TECHMAP — Health Check Routes"""
 
 import logging
-from fastapi import APIRouter
+
 import redis.asyncio as aioredis
+from fastapi import APIRouter
 
 from app.config import get_settings
 from app.schemas.common import HealthResponse
@@ -40,6 +41,7 @@ async def readiness_check():
     # Check PostgreSQL
     try:
         from sqlalchemy import text
+
         from app.core.database import engine
         async with engine.connect() as conn:
             result = await conn.execute(text("SELECT 1"))

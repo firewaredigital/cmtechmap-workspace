@@ -6,7 +6,6 @@ NO AUTHENTICATION REQUIRED — these are intentionally public.
 
 import json
 import logging
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text

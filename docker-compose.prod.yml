@@ -188,6 +188,8 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.3
     container_name: cmp-keycloak
+    # tini as PID 1 reaps the cat/grep orphans left by the health probe
+    init: true
     restart: always
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
@@ -196,13 +198,13 @@ services:
       KC_DB_URL: jdbc:postgresql://postgres:5432/${KC_POSTGRES_DB:-keycloak}
       KC_DB_USERNAME: ${POSTGRES_USER:-cm_techmap_prod}
       KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
-      KC_HOSTNAME: https://${DOMAIN_NAME:-localhost}/auth
+      KC_HOSTNAME: https://${DOMAIN_NAME:-localhost}
       KC_HTTP_ENABLED: "true"
       KC_HOSTNAME_STRICT: "false"
       KC_PROXY_HEADERS: xforwarded
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
-    command: start --import-realm --optimized
+    command: start --import-realm
     ports:
       - "127.0.0.1:18080:8080"
     volumes:
@@ -213,7 +215,7 @@ services:
     networks:
       - cm-network
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '\"status\":\"UP\"'"]
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '\"status\": *\"UP\"' <&3"]
       interval: 15s
       timeout: 10s
       retries: 10
@@ -261,7 +263,7 @@ services:
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
       - MINIO_USE_SSL=false
       - KEYCLOAK_SERVER_URL=http://keycloak:8080
-      - KEYCLOAK_EXTERNAL_URL=https://${DOMAIN_NAME:-localhost}/auth
+      - KEYCLOAK_EXTERNAL_URL=https://${DOMAIN_NAME:-localhost}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-cm-techmap}
       - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-cm-techmap-api}
       - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
@@ -334,7 +336,7 @@ services:
         --loglevel=info
         --concurrency=${CELERY_CONCURRENCY:-8}
         --autoscale=${CELERY_AUTOSCALE:-16,4}
-        --queues=default,processing,reports
+        --queues=default,processing,reports,ai_llm
         --max-tasks-per-child=500
         -n worker@%h
     environment:
@@ -363,6 +365,41 @@ services:
           memory: 8G
         reservations:
           memory: 2G
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Celery Beat — Scheduled Tasks (backups, cleanups, health checks)
+  # Without beat NOTHING scheduled ever runs: no database backups, no upload
+  # cleanup, no tenant health checks.
+  # ────────────────────────────────────────────────────────────────────────────
+  celery-beat:
+    build:
+      context: ./cm-techmap-backend
+      dockerfile: Dockerfile
+    container_name: cmp-celery-beat
+    restart: always
+    command: celery -A app.celery_app beat --loglevel=info
+    environment:
+      - APP_ENV=production
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cm_techmap_prod}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-cm_techmap}
+      - DATABASE_URL_SYNC=postgresql+psycopg2://${POSTGRES_USER:-cm_techmap_prod}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-cm_techmap}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-cm_techmap_prod}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      - MINIO_USE_SSL=false
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - cm-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   # ────────────────────────────────────────────────────────────────────────────
   # Flower — Celery Monitoring
@@ -476,7 +513,7 @@ services:
     networks:
       - cm-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -507,7 +544,7 @@ services:
     networks:
       - cm-network
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/nginx-health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/nginx-health"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -565,6 +602,7 @@ services:
       - "127.0.0.1:9090:9090"
     volumes:
       - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
       - prometheus_data:/prometheus
     networks:
       - cm-network

@@ -6,13 +6,19 @@
 FROM alpine:3.20
 
 # Install PostgreSQL client + MinIO client + cron
+# mc download is architecture-aware: the OCI Always Free VM is ARM (aarch64);
+# a hardcoded amd64 binary fails there with "exec format error".
 RUN apk add --no-cache \
     postgresql16-client \
     curl \
     bash \
     tzdata \
     jq \
-    && curl -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc \
+    && case "$(uname -m)" in \
+         aarch64|arm64) MC_ARCH="linux-arm64" ;; \
+         *) MC_ARCH="linux-amd64" ;; \
+       esac \
+    && curl -fSL -o /usr/local/bin/mc "https://dl.min.io/client/mc/release/${MC_ARCH}/mc" \
     && chmod +x /usr/local/bin/mc
 
 # Set timezone (configurable via TZ env)

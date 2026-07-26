@@ -5,6 +5,7 @@ Audit log for all API requests with timing and user context.
 
 import logging
 import time
+
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response

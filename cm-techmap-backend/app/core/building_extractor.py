@@ -7,12 +7,10 @@ Outputs a GeoJSON FeatureCollection with height attributes for 3D extrusion.
 import json
 import logging
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import rasterio
 from shapely.geometry import Polygon, mapping
-from shapely.ops import unary_union
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +54,7 @@ def extract_building_footprints(
     # Downsample large images to max 4096px to avoid OOM — the DSM generator
     # already operates at this resolution, so building detection accuracy
     # is not affected. Coordinates are remapped via adjusted transform.
-    MAX_DIM = 4096
+    max_dim = 4096
     with rasterio.open(orthophoto_path) as src:
         orig_transform = src.transform
         crs = src.crs
@@ -65,8 +63,8 @@ def extract_building_footprints(
         band_count = min(src.count, 3)
 
         scale = 1.0
-        if max(width, height) > MAX_DIM:
-            scale = MAX_DIM / max(width, height)
+        if max(width, height) > max_dim:
+            scale = max_dim / max(width, height)
             out_shape = (int(height * scale), int(width * scale))
             logger.info(
                 f"[BUILDINGS] Downsampling ortho {width}x{height} → "
@@ -165,7 +163,7 @@ def extract_building_footprints(
 
 def _create_building_mask(red, green, blue, height_ag, min_height):
     """Create a binary mask of building pixels using height + color."""
-    from scipy.ndimage import binary_fill_holes, binary_opening, binary_closing
+    from scipy.ndimage import binary_closing, binary_fill_holes, binary_opening
 
     # Height-based mask
     height_mask = height_ag > min_height
@@ -392,11 +390,14 @@ def extract_buildings_from_elevation(
     Returns:
         Path to the generated GeoJSON file
     """
-    from scipy.ndimage import (
-        binary_fill_holes, binary_opening, binary_closing,
-        label, uniform_filter, median_filter,
-    )
     from pyproj import Transformer
+    from scipy.ndimage import (
+        binary_closing,
+        binary_fill_holes,
+        binary_opening,
+        label,
+        median_filter,
+    )
 
     dsm_path = Path(dsm_path)
     if output_path is None:
