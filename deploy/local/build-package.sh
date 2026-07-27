@@ -46,11 +46,13 @@ echo ">> Copiando código do backend"
 tar -C "$APPS" \
     --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \
     --exclude='*.egg-info' --exclude='.pytest_cache' --exclude='.ruff_cache' \
+    --exclude='.git' --exclude='.github' \
     -cf - cm-techmap-backend | tar -C "$STAGE/applications" -xf -
 
 echo ">> Copiando código do frontend"
 tar -C "$APPS" \
     --exclude='node_modules' --exclude='dist' --exclude='.vite' \
+    --exclude='.git' --exclude='.github' \
     -cf - cm-techmap-frontend | tar -C "$STAGE/applications" -xf -
 
 # ── Recursos de infraestrutura referenciados pelo compose ────────────────────

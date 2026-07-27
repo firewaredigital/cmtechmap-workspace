@@ -18,7 +18,11 @@
 param(
     [string]$Domain = "",
     [int]$Port = 0,
-    [switch]$Yes
+    [switch]$Yes,
+    # Modo usado pelo instalador grafico (.exe): nao abre o navegador (a
+    # tela final do instalador faz isso) e grava a URL final em
+    # .access-url, para o instalador criar os atalhos com o endereco certo.
+    [switch]$Silent
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,7 +39,7 @@ function Write-Warn { param($m) Write-Host "  [!]  $m" -ForegroundColor Yellow }
 function Stop-Fail  { param($m) Write-Host "  [X]  $m" -ForegroundColor Red; exit 1 }
 function Ask {
     param($q)
-    if ($Yes) { return $true }
+    if ($Yes -or $Silent) { return $true }
     $r = Read-Host "  $q [s/N]"
     return ($r -eq "s" -or $r -eq "S" -or $r -eq "y" -or $r -eq "Y")
 }
@@ -295,7 +299,10 @@ if ($failures -eq 0) {
     Write-Host "    (troque em $BaseUrl/admin - e senha publica de exemplo)" -ForegroundColor Yellow
     Write-Host ""
     Write-Host "  Operacao:  .\cmtechmap.ps1 {start|stop|status|logs|backup|uninstall}"
-    Start-Process $BaseUrl
+    # O instalador grafico le este arquivo para criar os atalhos com a URL
+    # correta (a porta pode ter sido escolhida dinamicamente).
+    [IO.File]::WriteAllText((Join-Path $Here ".access-url"), $BaseUrl)
+    if (-not $Silent) { Start-Process $BaseUrl }
 } else {
     Write-Host "Instalacao concluida com $failures verificacao(oes) falhando." -ForegroundColor Yellow
     Write-Host "  Alguns servicos podem ainda estar iniciando. Reveja com:"
