@@ -58,6 +58,26 @@ async def upload_geotiff(
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
+    # Validar os identificadores ANTES de qualquer trabalho pesado: sem isto,
+    # um project_id malformado só estoura lá na frente, dentro do CAST(... AS
+    # uuid), e o handler genérico devolve 500 com a query SQL e os parâmetros
+    # expostos ao cliente.
+    try:
+        uuid.UUID(project_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(
+            status_code=422,
+            detail="project_id inválido: informe o identificador (UUID) de um projeto existente.",
+        )
+    if flight_id:
+        try:
+            uuid.UUID(flight_id)
+        except (ValueError, AttributeError, TypeError):
+            raise HTTPException(
+                status_code=422,
+                detail="flight_id inválido: informe o identificador (UUID) de um voo existente.",
+            )
+
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -257,8 +277,13 @@ async def upload_geotiff(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[GEOTIFF] Upload failed: {e}")
-        raise HTTPException(status_code=500, detail=f"GeoTIFF processing failed: {e}")
+        # Não repassar `e` ao cliente: o texto traz a query SQL, os parâmetros
+        # e detalhes internos do driver. O rastro completo fica no log.
+        logger.exception(f"[GEOTIFF] Upload failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Falha ao processar o GeoTIFF. Consulte os logs do servidor.",
+        )
     finally:
         if os.path.exists(work_dir):
             shutil.rmtree(work_dir)

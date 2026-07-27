@@ -30,7 +30,7 @@ mkdir -p "$PAYLOAD/applications/deploy/local" \
 
 # Instaladores e configuração
 for f in docker-compose.local.yml .env.local.example install.ps1 \
-         cmtechmap.ps1 README.md; do
+         cmtechmap.ps1 README.md GUIA-DE-TESTE.md; do
     cp "$LOCAL_DIR/$f" "$PAYLOAD/applications/deploy/local/"
 done
 cp -r "$LOCAL_DIR/nginx" "$PAYLOAD/applications/deploy/local/"

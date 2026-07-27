@@ -36,7 +36,7 @@ mkdir -p "$STAGE/applications/deploy/local" \
 # ── Instaladores e configuração ──────────────────────────────────────────────
 echo ">> Copiando instaladores"
 for f in docker-compose.local.yml .env.local.example install.sh install.ps1 \
-         cmtechmap cmtechmap.ps1 README.md; do
+         cmtechmap cmtechmap.ps1 README.md GUIA-DE-TESTE.md; do
     cp "$HERE/$f" "$STAGE/applications/deploy/local/"
 done
 cp -r "$HERE/nginx" "$STAGE/applications/deploy/local/"
