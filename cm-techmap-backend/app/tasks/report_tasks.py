@@ -54,6 +54,7 @@ def generate_project_report(
     report_type: str = "project_summary",
     output_format: str = "pdf",
     report_config: dict | None = None,
+    tenant_schema: str | None = None,
 ) -> dict:
     """
     Generate a complete project report (PDF or Excel).
@@ -63,9 +64,14 @@ def generate_project_report(
     2. Generate report content via ReportGeneratorService
     3. Upload to MinIO
     4. Update report record in database
+
+    `tenant_schema` routes every query to the municipality that owns the
+    report — the worker has no request context to infer it from.
     """
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import Session
+
+    from app.tasks.processing import _apply_tenant_search_path
 
     logger.info("[REPORT] Starting report generation: %s (%s, type=%s)", report_id, output_format, report_type)
 
@@ -73,16 +79,18 @@ def generate_project_report(
 
     try:
         with Session(engine) as session:
+            _apply_tenant_search_path(session, tenant_schema)
+
             # Update status to generating
             session.execute(
-                text("UPDATE public.reports SET status = 'generating' WHERE id = :id"),
+                text("UPDATE reports SET status = 'generating' WHERE id = :id"),
                 {"id": report_id},
             )
             session.commit()
 
             # ── 1. Fetch project data ──────────────────────────────────────
             result = session.execute(
-                text("SELECT * FROM public.projects WHERE id = :id"),
+                text("SELECT * FROM projects WHERE id = :id"),
                 {"id": project_id},
             )
             project_row = result.mappings().first()
@@ -94,7 +102,7 @@ def generate_project_report(
             # ── 2. Fetch flights ───────────────────────────────────────────
             result = session.execute(
                 text("""
-                    SELECT * FROM public.flights
+                    SELECT * FROM flights
                     WHERE project_id = :pid AND is_active = true
                     ORDER BY flight_date DESC
                 """),
@@ -111,7 +119,7 @@ def generate_project_report(
                 params = {f"fid_{i}": fid for i, fid in enumerate(flight_ids)}
                 result = session.execute(
                     text(f"""
-                        SELECT * FROM public.flight_assets
+                        SELECT * FROM flight_assets
                         WHERE flight_id IN ({placeholders}) AND is_active = true
                         ORDER BY asset_type
                     """),
@@ -252,7 +260,7 @@ def generate_project_report(
             # ── 6. Update database ─────────────────────────────────────────
             session.execute(
                 text("""
-                    UPDATE public.reports SET
+                    UPDATE reports SET
                         status = 'completed',
                         file_key = :file_key,
                         file_size_bytes = :size
@@ -282,8 +290,9 @@ def generate_project_report(
         # Update status to failed
         try:
             with Session(engine) as session:
+                _apply_tenant_search_path(session, tenant_schema)
                 session.execute(
-                    text("UPDATE public.reports SET status = 'failed', error_message = :err WHERE id = :id"),
+                    text("UPDATE reports SET status = 'failed', error_message = :err WHERE id = :id"),
                     {"id": report_id, "err": str(exc)[:1000]},
                 )
                 session.commit()

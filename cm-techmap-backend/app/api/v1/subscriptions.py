@@ -348,7 +348,7 @@ async def _get_tenant_usage(db: AsyncSession, tenant_id, tenant_slug: str | None
     # Count projects
     try:
         r = await db.execute(text(
-            "SELECT COUNT(*) FROM public.projects WHERE is_active = true"
+            "SELECT COUNT(*) FROM projects WHERE is_active = true"
         ))
         usage["projects"] = r.scalar() or 0
     except Exception:
@@ -357,7 +357,7 @@ async def _get_tenant_usage(db: AsyncSession, tenant_id, tenant_slug: str | None
     # Sum storage
     try:
         r = await db.execute(text(
-            "SELECT COALESCE(SUM(file_size_bytes), 0) FROM public.flight_assets WHERE is_active = true"
+            "SELECT COALESCE(SUM(file_size_bytes), 0) FROM flight_assets WHERE is_active = true"
         ))
         storage_bytes = int(r.scalar() or 0)
         usage["storage_gb"] = round(storage_bytes / (1024 ** 3), 2)

@@ -299,7 +299,7 @@ async def generate_report(
 
     # Verify project exists
     result = await session.execute(
-        text("SELECT id, name FROM public.projects WHERE id = :id"),
+        text("SELECT id, name FROM projects WHERE id = :id"),
         {"id": str(request.project_id)},
     )
     project = result.mappings().first()
@@ -309,7 +309,7 @@ async def generate_report(
     # Create report record
     await session.execute(
         text("""
-            INSERT INTO public.reports (id, project_id, title, report_type, output_format, status, requested_by)
+            INSERT INTO reports (id, project_id, title, report_type, output_format, status, requested_by)
             VALUES (:id, :pid, :title, :rtype, :fmt, 'pending', :requested_by)
         """),
         {
@@ -334,6 +334,7 @@ async def generate_report(
         resolved_config["groq"] = request.groq.model_dump(exclude_none=True)
 
     # Dispatch Celery task
+    from app.core.database import current_tenant_schema
     from app.tasks.report_tasks import generate_project_report
     task = generate_project_report.delay(
         report_id=report_id,
@@ -341,11 +342,14 @@ async def generate_report(
         report_type=request.report_type,
         output_format=request.output_format,
         report_config=resolved_config,
+        # The worker resolves nothing from the request — without this the
+        # report is generated against the wrong municipality's data.
+        tenant_schema=current_tenant_schema.get(),
     )
 
     # Update celery_task_id
     await session.execute(
-        text("UPDATE public.reports SET celery_task_id = :tid WHERE id = :id"),
+        text("UPDATE reports SET celery_task_id = :tid WHERE id = :id"),
         {"tid": task.id, "id": report_id},
     )
     await session.commit()
@@ -395,7 +399,7 @@ async def list_reports(
 
     # Count
     count_result = await session.execute(
-        text(f"SELECT COUNT(*) FROM public.reports {where_clause}"),
+        text(f"SELECT COUNT(*) FROM reports {where_clause}"),
         params,
     )
     total = count_result.scalar() or 0
@@ -404,7 +408,7 @@ async def list_reports(
     offset = (page - 1) * page_size
     result = await session.execute(
         text(f"""
-            SELECT * FROM public.reports {where_clause}
+            SELECT * FROM reports {where_clause}
             ORDER BY created_at DESC
             LIMIT :limit OFFSET :offset
         """),
@@ -454,7 +458,7 @@ async def get_report(
 ):
     """Get report details with download URL (if completed)."""
     result = await session.execute(
-        text("SELECT * FROM public.reports WHERE id = :id"),
+        text("SELECT * FROM reports WHERE id = :id"),
         {"id": str(report_id)},
     )
     row = result.mappings().first()
@@ -499,7 +503,7 @@ async def delete_report(
 ):
     """Delete a report and its file from MinIO."""
     result = await session.execute(
-        text("SELECT file_key FROM public.reports WHERE id = :id"),
+        text("SELECT file_key FROM reports WHERE id = :id"),
         {"id": str(report_id)},
     )
     row = result.mappings().first()
@@ -518,7 +522,7 @@ async def delete_report(
 
     # Delete from database
     await session.execute(
-        text("DELETE FROM public.reports WHERE id = :id"),
+        text("DELETE FROM reports WHERE id = :id"),
         {"id": str(report_id)},
     )
     await session.commit()

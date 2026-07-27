@@ -107,7 +107,12 @@ async def create_project(
             continue
 
     if not row:
-        raise HTTPException(status_code=500, detail="Failed to create project")
+        # Every retry lost the race for a unique project code — a conflict
+        # the caller can simply retry, not a server fault.
+        raise HTTPException(
+            status_code=409,
+            detail="Não foi possível gerar um código único para o projeto. Tente novamente.",
+        )
 
     await db.commit()
     return ProjectRead(

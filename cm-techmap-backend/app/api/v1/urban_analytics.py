@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from minio.error import S3Error
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -591,9 +592,16 @@ async def analyze_slope_risk(
         minio_client.fget_object(settings.minio_bucket_elevation_models, dsm_file_key, str(dsm_local))
         result = DisasterPreventionService.analyze_slope_risk(str(dsm_local), cell_size_m=cell_size)
         return result
-    except Exception as e:
+    except S3Error as e:
+        if e.code in ("NoSuchKey", "NoSuchBucket"):
+            raise HTTPException(status_code=404, detail="Arquivo de origem não encontrado no storage.")
         logger.error(f"Slope analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Análise de declividade falhou: {str(e)[:200]}")
+        raise HTTPException(status_code=502, detail="Análise de declividade falhou: falha de acesso ao storage.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Slope analysis failed: {e}")
+        raise HTTPException(status_code=500, detail="Análise de declividade falhou")
     finally:
         import shutil
         shutil.rmtree(workdir, ignore_errors=True)
@@ -637,9 +645,16 @@ async def analyze_flood_risk(
             cell_size_m=cell_size,
         )
         return result
-    except Exception as e:
+    except S3Error as e:
+        if e.code in ("NoSuchKey", "NoSuchBucket"):
+            raise HTTPException(status_code=404, detail="Arquivo de origem não encontrado no storage.")
         logger.error(f"Flood analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Análise de enchente falhou: {str(e)[:200]}")
+        raise HTTPException(status_code=502, detail="Análise de enchente falhou: falha de acesso ao storage.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Flood analysis failed: {e}")
+        raise HTTPException(status_code=500, detail="Análise de enchente falhou")
     finally:
         import shutil
         shutil.rmtree(workdir, ignore_errors=True)
@@ -682,9 +697,16 @@ async def detect_dengue_water(
         minio_client.fget_object(settings.minio_bucket_orthomosaics, orthomosaic_file_key, str(ortho_local))
         result = DengueHotspotService.detect_water_bodies(str(ortho_local), ndwi_threshold=ndwi_threshold)
         return result
-    except Exception as e:
+    except S3Error as e:
+        if e.code in ("NoSuchKey", "NoSuchBucket"):
+            raise HTTPException(status_code=404, detail="Arquivo de origem não encontrado no storage.")
         logger.error(f"Dengue water detection failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Detecção de água falhou: {str(e)[:200]}")
+        raise HTTPException(status_code=502, detail="Detecção de água falhou: falha de acesso ao storage.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Dengue water detection failed: {e}")
+        raise HTTPException(status_code=500, detail="Detecção de água falhou")
     finally:
         import shutil
         shutil.rmtree(workdir, ignore_errors=True)
@@ -724,9 +746,16 @@ async def detect_dengue_depressions(
             str(dsm_local), depression_threshold_m=depression_threshold,
         )
         return result
-    except Exception as e:
+    except S3Error as e:
+        if e.code in ("NoSuchKey", "NoSuchBucket"):
+            raise HTTPException(status_code=404, detail="Arquivo de origem não encontrado no storage.")
         logger.error(f"Depression detection failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Detecção de depressões falhou: {str(e)[:200]}")
+        raise HTTPException(status_code=502, detail="Detecção de depressões falhou: falha de acesso ao storage.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Depression detection failed: {e}")
+        raise HTTPException(status_code=500, detail="Detecção de depressões falhou")
     finally:
         import shutil
         shutil.rmtree(workdir, ignore_errors=True)
@@ -773,9 +802,16 @@ async def compare_dsm_epochs(
             str(dsm1), str(dsm2), change_threshold_m=change_threshold,
         )
         return result
-    except Exception as e:
+    except S3Error as e:
+        if e.code in ("NoSuchKey", "NoSuchBucket"):
+            raise HTTPException(status_code=404, detail="Arquivo de origem não encontrado no storage.")
         logger.error(f"Temporal DSM comparison failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Comparação temporal falhou: {str(e)[:200]}")
+        raise HTTPException(status_code=502, detail="Comparação temporal falhou: falha de acesso ao storage.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Temporal DSM comparison failed: {e}")
+        raise HTTPException(status_code=500, detail="Comparação temporal falhou")
     finally:
         import shutil
         shutil.rmtree(workdir, ignore_errors=True)
@@ -816,9 +852,16 @@ async def compare_vegetation_epochs(
         minio_client.fget_object(settings.minio_bucket_orthomosaics, ortho_epoch2_key, str(ortho2))
         result = TemporalComparisonService.compare_vegetation(str(ortho1), str(ortho2))
         return result
-    except Exception as e:
+    except S3Error as e:
+        if e.code in ("NoSuchKey", "NoSuchBucket"):
+            raise HTTPException(status_code=404, detail="Arquivo de origem não encontrado no storage.")
         logger.error(f"Vegetation comparison failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Comparação de vegetação falhou: {str(e)[:200]}")
+        raise HTTPException(status_code=502, detail="Comparação de vegetação falhou: falha de acesso ao storage.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Vegetation comparison failed: {e}")
+        raise HTTPException(status_code=500, detail="Comparação de vegetação falhou")
     finally:
         import shutil
         shutil.rmtree(workdir, ignore_errors=True)

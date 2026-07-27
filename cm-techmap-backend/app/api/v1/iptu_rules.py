@@ -9,6 +9,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db, require_gestor, require_tenant_admin
@@ -106,10 +107,13 @@ async def create_rule_set(
             "municipality_code": municipality_code,
             "created_at": row[1].isoformat() if row[1] else None,
         }
+    except IntegrityError:
+        # Duplicate municipality_code — user-correctable, not a server fault.
+        await db.rollback()
+        raise HTTPException(409, "Já existe um rule set para este município")
     except Exception as e:
-        if "unique" in str(e).lower():
-            raise HTTPException(400, "Já existe um rule set para este município")
-        logger.error(f"Failed to create rule set: {e}")
+        await db.rollback()
+        logger.exception(f"Failed to create rule set: {e}")
         raise HTTPException(500, "Falha ao criar rule set")
 
 
@@ -237,10 +241,13 @@ async def add_zone_rule(
         row = result.fetchone()
         await db.commit()
         return {"id": str(row[0]), "zone_name": zone_name, "status": "created"}
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, f"Zona '{zone_name}' já existe neste rule set")
     except Exception as e:
-        if "unique" in str(e).lower():
-            raise HTTPException(400, f"Zona '{zone_name}' já existe neste rule set")
-        raise HTTPException(500, f"Falha ao criar zona: {str(e)[:200]}")
+        await db.rollback()
+        logger.exception(f"Failed to create zone rule: {e}")
+        raise HTTPException(500, "Falha ao criar zona")
 
 
 @router.put("/{rule_set_id}/zones/{zone_id}")

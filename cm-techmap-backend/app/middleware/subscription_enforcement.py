@@ -73,7 +73,7 @@ async def enforce_project_limit(
         return
 
     try:
-        r = await db.execute(text("SELECT COUNT(*) FROM public.projects WHERE is_active = true"))
+        r = await db.execute(text("SELECT COUNT(*) FROM projects WHERE is_active = true"))
         current = r.scalar() or 0
         if current >= max_projects:
             raise SubscriptionLimitExceeded("projetos", current, max_projects)
@@ -99,7 +99,7 @@ async def enforce_storage_limit(
 
     try:
         r = await db.execute(text(
-            "SELECT COALESCE(SUM(file_size_bytes), 0) FROM public.flight_assets WHERE is_active = true"
+            "SELECT COALESCE(SUM(file_size_bytes), 0) FROM flight_assets WHERE is_active = true"
         ))
         current_bytes = int(r.scalar() or 0)
         limit_bytes = int(max_storage_tb * 1024 ** 4)  # TB → bytes
