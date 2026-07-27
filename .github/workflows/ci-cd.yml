@@ -247,6 +247,20 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   # Deploy to Production
   # ────────────────────────────────────────────────────────────────────────────
+  # ────────────────────────────────────────────────────────────────────────────
+  # Deploy to Production
+  #
+  # Real topology: backend on the OCI micro VM (rsync mirror at
+  # /opt/cm-techmap — NOT a git clone, so `git pull` there fails), frontend
+  # on Vercel. Both steps are driven by the same scripts a human would run,
+  # so CI and manual deploys cannot drift apart.
+  #
+  # Required repository secrets:
+  #   PROD_SSH_KEY  — private key with access to the VM (ubuntu@)
+  #   PROD_HOST     — VM address (e.g. 143.47.116.9); defaults below
+  #   PROD_USER     — VM user (e.g. ubuntu)
+  #   VERCEL_TOKEN  — https://vercel.com/account/settings/tokens
+  # ────────────────────────────────────────────────────────────────────────────
   deploy-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
@@ -254,19 +268,33 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment: production
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ secrets.PROD_USER }}
-          key: ${{ secrets.PROD_SSH_KEY }}
-          script: |
-            set -euo pipefail
-            cd /opt/cm-techmap
-            # The compose file has build: contexts (no image: keys) — `pull`
-            # alone deploys NOTHING new. Sync the source, then rebuild.
-            git fetch origin && git reset --hard origin/main
-            docker compose -f docker-compose.prod.yml --env-file .env.production build --parallel
-            docker compose -f docker-compose.prod.yml --env-file .env.production up -d --remove-orphans
-            docker compose -f docker-compose.prod.yml --env-file .env.production exec -T backend alembic upgrade head
-            echo "Production deployed: ${{ github.sha }}"
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "${{ secrets.PROD_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Deploy backend to the OCI VM
+        env:
+          VM_HOST: ${{ secrets.PROD_HOST }}
+          VM_USER: ${{ secrets.PROD_USER }}
+          SSH_KEY: /home/runner/.ssh/deploy_key
+        run: ./scripts/deploy-vm.sh
+
+      - name: Deploy frontend to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: ./scripts/deploy-vercel.sh main
+
+      - name: Smoke test the public URL
+        run: |
+          set -euo pipefail
+          BASE=https://cm-techmap-frontend.vercel.app
+          for path in / /api/v1/health; do
+            code=$(curl -s -m 30 -o /dev/null -w '%{http_code}' "$BASE$path")
+            echo "$path -> HTTP $code"
+            [ "$code" = "200" ] || exit 1
+          done
+          echo "Production deployed: ${{ github.sha }}"
