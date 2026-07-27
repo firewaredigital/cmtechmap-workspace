@@ -41,3 +41,11 @@ cm-techmap-backend/**/__pycache__/
 postgres_data/
 redis_data/
 minio_data/
+
+# Terraform local state e credenciais OCI
+oci-deploy/terraform/.terraform/
+oci-deploy/terraform/*.tfstate*
+oci-deploy/terraform/tfplan
+oci-deploy/a1-retry.log
+oci-deploy/.a1-ip
+oci-deploy/.stop-retry

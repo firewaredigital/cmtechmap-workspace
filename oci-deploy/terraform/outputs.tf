@@ -29,7 +29,7 @@ output "subnet_id" {
 
 output "block_volume_id" {
   description = "OCID do block volume de dados"
-  value       = oci_core_volume.cm_techmap_data.id
+  value       = var.block_volume_size_gb > 0 ? oci_core_volume.cm_techmap_data[0].id : null
 }
 
 output "ssh_command" {

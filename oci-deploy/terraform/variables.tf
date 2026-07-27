@@ -118,13 +118,21 @@ variable "os_image_id" {
 
 # ── Block Volume ─────────────────────────────────────────────────────────────
 variable "block_volume_size_gb" {
-  description = "Tamanho do block volume para dados em GB"
+  description = <<-EOT
+    Tamanho do block volume de dados em GB. Use 0 para NÃO criar o volume.
+
+    Os 200 GB do Always Free são o total da tenancy somando boot volumes E
+    block volumes de TODAS as instâncias. Se já houver outra VM ocupando a
+    cota, criar o volume falha com "LimitExceeded ... Upgrade to a paid
+    account" — nesse caso suba a VM só com o boot (0 aqui) e crie o volume
+    depois de liberar espaço.
+  EOT
   type        = number
   default     = 150
 
   validation {
-    condition     = var.block_volume_size_gb >= 50 && var.block_volume_size_gb <= 150
-    error_message = "Boot (50 GB) + Block Volume devem caber nos 200 GB Always Free"
+    condition     = var.block_volume_size_gb == 0 || (var.block_volume_size_gb >= 50 && var.block_volume_size_gb <= 150)
+    error_message = "Use 0 (sem volume) ou entre 50 e 150 GB — boot (50) + block deve caber nos 200 GB Always Free"
   }
 }
 

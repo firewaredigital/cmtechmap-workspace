@@ -237,14 +237,19 @@ resource "oci_core_instance" "cm_techmap" {
 # BLOCK VOLUME — 150 GB para dados persistentes
 # ══════════════════════════════════════════════════════════════════════════════
 
+// O Always Free dá 200 GB de armazenamento SOMANDO boot volumes e block
+// volumes de toda a tenancy. Enquanto a VM antiga existir (47 GB de boot +
+// 100 GB de dados = 147 GB), só há folga para o boot da nova VM. Por isso o
+// volume de dados é opcional: criar com block_volume_size_gb = 0 agora e,
+// depois de desativar a VM antiga, subir o valor e reaplicar.
 resource "oci_core_volume" "cm_techmap_data" {
+  count               = var.block_volume_size_gb > 0 ? 1 : 0
   compartment_id      = var.compartment_ocid
   availability_domain = local.availability_domain
   display_name        = "${var.app_name}-data-volume"
   size_in_gbs         = var.block_volume_size_gb
   freeform_tags       = var.freeform_tags
 
-  # Usamos o VPU padrão (0-10, free tier usa balanced = 10)
   # Always Free block volumes are limited to VPU 0 ("Lower Cost").
   # VPU 10 (Balanced) on 150 GB is BILLABLE — keep 0 to stay free.
   vpus_per_gb = 0
@@ -252,9 +257,10 @@ resource "oci_core_volume" "cm_techmap_data" {
 
 # ── Attach do Block Volume à VM ──────────────────────────────────────────────
 resource "oci_core_volume_attachment" "cm_techmap_data" {
+  count           = var.block_volume_size_gb > 0 ? 1 : 0
   attachment_type = "paravirtualized"
   instance_id     = oci_core_instance.cm_techmap.id
-  volume_id       = oci_core_volume.cm_techmap_data.id
+  volume_id       = oci_core_volume.cm_techmap_data[0].id
   display_name    = "${var.app_name}-data-attachment"
 
   # Não destruir o volume se a instância for recriada
