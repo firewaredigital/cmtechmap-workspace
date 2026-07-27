@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -22,6 +23,27 @@ from app.core.pubsub import publish_progress
 class NonRetryableProcessingError(RuntimeError):
     """The environment cannot run this pipeline at all (e.g. NodeODM absent
     and ALLOW_SIMULATION off) — retrying would never succeed."""
+
+
+_SCHEMA_NAME_RE = re.compile(r"^tenant_[a-z0-9_]+$")
+
+
+def _apply_tenant_search_path(conn, tenant_schema: str | None) -> None:
+    """
+    Point an unqualified-SQL connection at ONE tenant schema.
+
+    Celery workers run outside the request cycle, so the ContextVar the API
+    uses to route queries is empty here — the schema travels as a task kwarg
+    instead. The name is validated against the tenant_<slug> shape because it
+    cannot be passed as a bind parameter in SET search_path.
+    """
+    from sqlalchemy import text as sa_text
+
+    if not tenant_schema:
+        return
+    if not _SCHEMA_NAME_RE.match(tenant_schema):
+        raise ValueError(f"Invalid tenant schema name: {tenant_schema!r}")
+    conn.execute(sa_text(f'SET search_path TO "{tenant_schema}", public, topology'))
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -53,6 +75,7 @@ def process_drone_upload(
     flight_id: str | None = None,
     project_id: str | None = None,
     odm_options: dict | None = None,
+    tenant_schema: str | None = None,
 ):
     """
     Full photogrammetry pipeline with 7 stages:
@@ -529,7 +552,8 @@ def process_drone_upload(
                          "Updating database records...")
 
         # Update database records (sync since we're in Celery)
-        _update_database_records(upload_id, project_id, processed_assets, flight_id=flight_id)
+        _update_database_records(upload_id, project_id, processed_assets,
+                                 flight_id=flight_id, tenant_schema=tenant_schema)
 
         # ── Stage 8: CONDITIONAL 3D PIPELINE ─────────────────────────────
         # Determine DSM source: real (NodeODM) vs synthetic (fallback)
@@ -677,6 +701,7 @@ def _update_database_records(
     project_id: str | None,
     assets: dict,
     flight_id: str | None = None,
+    tenant_schema: str | None = None,
 ) -> None:
     """
     Update DB records after processing (synchronous for Celery).
@@ -684,6 +709,12 @@ def _update_database_records(
     Inserts each generated asset into `flight_assets` with full geospatial
     metadata (bounds, CRS, resolution), and propagates bounding box to
     the parent project for spatial queries.
+
+    `tenant_schema` MUST be provided for tenant-owned uploads: the tables
+    below (uploads, flight_assets, projects, flights) live in the tenant
+    schema, and a Celery worker has none of the request-scoped tenant
+    context the API relies on. Without it every write silently targeted
+    `public.*` and the results of the flight were lost.
     """
     import json
 
@@ -697,6 +728,8 @@ def _update_database_records(
 
     try:
         with engine.connect() as conn:
+            _apply_tenant_search_path(conn, tenant_schema)
+
             # ── Update upload status ──────────────────────────────────
             conn.execute(sa_text(
                 "UPDATE uploads SET status = 'completed' WHERE id = :id"
@@ -831,7 +864,11 @@ def _update_database_records(
             )
 
     except Exception as e:
-        logger.error(f"  DB update failed: {e}")
+        # Never swallow this: the pipeline would report "completed" while the
+        # orthomosaic/DSM it just produced was never registered — the user
+        # sees a finished flight with no assets and no error anywhere.
+        logger.exception(f"  DB update failed: {e}")
+        raise
     finally:
         engine.dispose()
 

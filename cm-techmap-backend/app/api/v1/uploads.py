@@ -133,11 +133,15 @@ async def complete_upload(
     part_keys = [f"{file_key}.part{i:05d}" for i in range(chunk_count)]
     compose_parts(bucket, file_key, part_keys)
 
-    # Dispatch Celery task for processing
+    # Dispatch Celery task for processing.
+    # The worker has no request context, so the tenant schema must travel
+    # with the task — otherwise its writes land in `public`.
     from app.celery_app import celery_app
+    from app.core.database import current_tenant_schema
     job = celery_app.send_task(
         "app.tasks.processing.process_drone_upload",
         args=[str(upload_id), file_key, bucket],
+        kwargs={"tenant_schema": current_tenant_schema.get()},
         queue="processing",
     )
 

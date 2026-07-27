@@ -14,6 +14,7 @@ from celery import shared_task
 
 from app.config import get_settings
 from app.core.pubsub import publish_progress
+from app.tasks.processing import _apply_tenant_search_path
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -216,6 +217,7 @@ def generate_dsm_and_buildings(
     flight_id: str,
     project_id: str,
     base_elevation: float = 800.0,
+    tenant_schema: str | None = None,
 ):
     """
     Generate a synthetic DSM and extract building footprints from an orthomosaic.
@@ -341,17 +343,11 @@ def generate_dsm_and_buildings(
 
         try:
             with engine.connect() as conn:
-                # Set search_path to include all tenant schemas
-                # The flight_assets table is in the tenant schema, not public
-                conn.execute(sa_text(
-                    "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'tenant_%' LIMIT 1"
-                ))
-                tenant_rows = conn.execute(sa_text(
-                    "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'tenant_%'"
-                )).fetchall()
-                if tenant_rows:
-                    schemas = ", ".join(r[0] for r in tenant_rows)
-                    conn.execute(sa_text(f"SET search_path TO {schemas}, public, topology"))
+                # Point at the OWNING tenant schema only. Concatenating every
+                # tenant_* schema into search_path made unqualified writes land
+                # in whichever schema Postgres resolved first — cross-tenant
+                # contamination in a multi-tenant product.
+                _apply_tenant_search_path(conn, tenant_schema)
 
                 # Insert DSM asset
                 conn.execute(sa_text(
@@ -385,16 +381,17 @@ def generate_dsm_and_buildings(
 
             # Update flight status to 'completed' after successful processing
             with engine.connect() as conn:
-                if tenant_rows:
-                    schemas = ", ".join(r[0] for r in tenant_rows)
-                    conn.execute(sa_text(f"SET search_path TO {schemas}, public, topology"))
+                _apply_tenant_search_path(conn, tenant_schema)
                 conn.execute(sa_text(
                     "UPDATE flights SET status = 'completed' WHERE id = CAST(:fid AS uuid)"
                 ), {"fid": flight_id})
                 conn.commit()
                 logger.info(f"[DSM-PIPELINE] Updated flight {flight_id} status to 'completed'")
         except Exception as e:
-            logger.error(f"[DSM-PIPELINE] DB insert failed: {e}")
+            # Surfacing this matters: silently swallowing it leaves the flight
+            # stuck in 'processing' with assets on disk but nothing in the DB.
+            logger.exception(f"[DSM-PIPELINE] DB insert failed: {e}")
+            raise
         finally:
             engine.dispose()
 
@@ -438,6 +435,7 @@ def extract_buildings_from_real_dsm(
     flight_id: str = "",
     project_id: str = "",
     dsm_source: str = "real",
+    tenant_schema: str | None = None,
 ):
     """
     Extract building footprints from a REAL DSM (from NodeODM photogrammetry).
@@ -527,13 +525,11 @@ def extract_buildings_from_real_dsm(
         engine = create_engine(settings.database_url_sync)
         try:
             with engine.connect() as conn:
-                # Find tenant schemas
-                tenant_rows = conn.execute(sa_text(
-                    "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'tenant_%'"
-                )).fetchall()
-                if tenant_rows:
-                    schemas = ", ".join(r[0] for r in tenant_rows)
-                    conn.execute(sa_text(f"SET search_path TO {schemas}, public, topology"))
+                # Point at the OWNING tenant schema only. Concatenating every
+                # tenant_* schema into search_path made unqualified writes land
+                # in whichever schema Postgres resolved first — cross-tenant
+                # contamination in a multi-tenant product.
+                _apply_tenant_search_path(conn, tenant_schema)
 
                 # Update the DSM asset's metadata_json to include dsm_source
                 conn.execute(sa_text(
@@ -581,6 +577,7 @@ def normalize_and_process_real_dsm(
     dtm_bucket: str | None = None,
     flight_id: str = "",
     project_id: str = "",
+    tenant_schema: str | None = None,
 ):
     """
     Normalize a real DSM from NodeODM and extract RTE offset metadata.
@@ -708,13 +705,11 @@ def normalize_and_process_real_dsm(
         engine = create_engine(settings.database_url_sync)
         try:
             with engine.connect() as conn:
-                # Find tenant schemas
-                tenant_rows = conn.execute(sa_text(
-                    "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'tenant_%'"
-                )).fetchall()
-                if tenant_rows:
-                    schemas = ", ".join(r[0] for r in tenant_rows)
-                    conn.execute(sa_text(f"SET search_path TO {schemas}, public, topology"))
+                # Point at the OWNING tenant schema only. Concatenating every
+                # tenant_* schema into search_path made unqualified writes land
+                # in whichever schema Postgres resolved first — cross-tenant
+                # contamination in a multi-tenant product.
+                _apply_tenant_search_path(conn, tenant_schema)
 
                 # Update DSM flight_asset metadata with normalization info
                 norm_metadata = {

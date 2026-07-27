@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.core.database import current_tenant_schema
 from app.core.storage import get_presigned_url
 from app.dependencies import get_db, require_gestor, require_operador, require_viewer
 from app.schemas.flight import FlightAsset, FlightAssetsRead, FlightCreate, FlightProcessRequest, FlightRead
@@ -194,6 +195,7 @@ async def trigger_flight_processing(
             kwargs={
                 "flight_id": str(flight_id),
                 "project_id": str(project_id),
+                "tenant_schema": current_tenant_schema.get(),
             },
             queue="processing",
         )
@@ -234,7 +236,8 @@ async def trigger_flight_processing(
                 uploads[0][2],
             ],
             kwargs={"flight_id": str(flight_id), "project_id": str(project_id),
-                    "odm_options": options},
+                    "odm_options": options,
+                    "tenant_schema": current_tenant_schema.get()},
             queue="processing",
         )
 
