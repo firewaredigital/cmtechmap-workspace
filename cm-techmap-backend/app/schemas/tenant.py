@@ -6,6 +6,33 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
+class TenantIPTUZoneSpec(BaseModel):
+    """One fiscal zone captured by the onboarding wizard (seeds tenant iptu_rules)."""
+
+    zone_name: str = Field(..., min_length=2, max_length=100)
+    land_value_per_sqm_brl: float = Field(..., ge=0)
+    built_value_per_sqm_brl: float = Field(..., ge=0)
+    aliquot_pct: float = Field(..., ge=0, le=100)
+
+
+class TenantIPTUSpec(BaseModel):
+    """IPTU rule set captured by the onboarding wizard (seeds tenant iptu_rule_sets)."""
+
+    municipality_code: str = Field(..., min_length=5, max_length=10)
+    base_year: int = Field(..., ge=2000, le=2100)
+    default_land_value_per_sqm: float = Field(50.0, ge=0)
+    default_built_value_per_sqm: float = Field(800.0, ge=0)
+    default_aliquot_pct: float = Field(1.0, ge=0, le=100)
+    zones: list[TenantIPTUZoneSpec] = Field(default_factory=list, max_length=50)
+
+
+class TenantInitialProjectSpec(BaseModel):
+    """First project captured by the onboarding wizard (seeds tenant projects)."""
+
+    name: str = Field(..., min_length=3, max_length=500)
+    description: str | None = None
+
+
 class TenantCreate(BaseModel):
     name: str = Field(..., min_length=3)
     slug: str = Field(..., min_length=3, max_length=100, pattern=r"^[a-z0-9_]+$")
@@ -13,6 +40,11 @@ class TenantCreate(BaseModel):
     city: str | None = None
     state: str | None = Field(None, max_length=2)
     contact_email: str | None = None
+    # Onboarding extras — written into the NEWLY provisioned schema. The wizard
+    # used to call /iptu/rules and /projects afterwards, but those endpoints are
+    # scoped to the CALLER's tenant, so the data landed in the wrong schema.
+    iptu: TenantIPTUSpec | None = None
+    initial_project: TenantInitialProjectSpec | None = None
 
 
 class TenantRead(BaseModel):

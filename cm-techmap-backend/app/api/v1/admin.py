@@ -1,5 +1,6 @@
 """CM TECHMAP — Admin Routes (Enhanced with Lifecycle + Quota Management)"""
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -22,6 +23,8 @@ from app.services.tenant_lifecycle import (
 from app.services.tenant_quota import get_tenant_quota
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+logger = logging.getLogger("cm_techmap.api.admin")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -57,6 +60,95 @@ async def list_tenants(
     return [TenantRead(id=r[0], name=r[1], slug=r[2], city=r[3],
                        state=r[4], is_active=r[5], created_at=r[6])
             for r in result.fetchall()]
+
+
+async def _seed_onboarding_data(
+    db: AsyncSession, schema: str, body: TenantCreate
+) -> dict[str, Any]:
+    """
+    Write wizard-collected extras INTO THE NEW TENANT SCHEMA.
+
+    Calling /iptu/rules or /projects right after provisioning would scope the
+    writes to the CALLER's tenant (get_db resolves the schema from the JWT),
+    so a super_admin onboarding a municipality would seed the wrong schema.
+    Here every table is schema-qualified with the freshly provisioned schema.
+    `schema` is derived from TenantCreate.slug, which Pydantic constrains to
+    ^[a-z0-9_]+$ — safe to interpolate as an identifier.
+    """
+    seeded: dict[str, Any] = {}
+
+    if body.iptu:
+        result = await db.execute(text(f"""
+            INSERT INTO "{schema}".iptu_rule_sets
+                (municipality_name, municipality_code, state, base_year,
+                 default_land_value_per_sqm, default_built_value_per_sqm,
+                 default_aliquot_pct)
+            VALUES (:name, :code, :state, :year, :land, :built, :aliquot)
+            ON CONFLICT (municipality_code) DO UPDATE
+                SET municipality_name = EXCLUDED.municipality_name,
+                    base_year = EXCLUDED.base_year,
+                    updated_at = NOW()
+            RETURNING id
+        """), {
+            "name": body.name,
+            "code": body.iptu.municipality_code,
+            "state": (body.state or "").upper(),
+            "year": body.iptu.base_year,
+            "land": body.iptu.default_land_value_per_sqm,
+            "built": body.iptu.default_built_value_per_sqm,
+            "aliquot": body.iptu.default_aliquot_pct,
+        })
+        rule_set_id = result.scalar()
+        zones_created = 0
+        for zone in body.iptu.zones:
+            await db.execute(text(f"""
+                INSERT INTO "{schema}".iptu_rules
+                    (rule_set_id, zone_name, land_value_per_sqm_brl,
+                     built_value_per_sqm_brl, aliquot_pct)
+                VALUES (:rsid, :zone, :land, :built, :aliquot)
+                ON CONFLICT (rule_set_id, zone_name) DO UPDATE
+                    SET land_value_per_sqm_brl = EXCLUDED.land_value_per_sqm_brl,
+                        built_value_per_sqm_brl = EXCLUDED.built_value_per_sqm_brl,
+                        aliquot_pct = EXCLUDED.aliquot_pct,
+                        updated_at = NOW()
+            """), {
+                "rsid": str(rule_set_id),
+                "zone": zone.zone_name.strip().lower(),
+                "land": zone.land_value_per_sqm_brl,
+                "built": zone.built_value_per_sqm_brl,
+                "aliquot": zone.aliquot_pct,
+            })
+            zones_created += 1
+        seeded["iptu_rule_set_id"] = str(rule_set_id)
+        seeded["iptu_zones"] = zones_created
+
+    if body.initial_project:
+        # projects has FORCE ROW LEVEL SECURITY with a search_path guard
+        # (rls_projects_schema_guard). SET LOCAL satisfies the policy for this
+        # transaction only; the public session search_path returns at commit.
+        await db.execute(text(f'SET LOCAL search_path TO "{schema}", public'))
+        result = await db.execute(text(rf"""
+            SELECT COALESCE(MAX(NULLIF(regexp_replace(code, '\D', '', 'g'), '')::int), 0)
+            FROM "{schema}".projects
+            WHERE code LIKE 'PRJ-%'
+        """))
+        code = f"PRJ-{int(result.scalar() or 0) + 1:03d}"
+        result = await db.execute(text(f"""
+            INSERT INTO "{schema}".projects (code, name, description, status, city, state)
+            VALUES (:code, :name, :description, 'pendente', :city, :state)
+            RETURNING id
+        """), {
+            "code": code,
+            "name": body.initial_project.name,
+            "description": body.initial_project.description,
+            "city": body.city,
+            "state": body.state,
+        })
+        seeded["project_id"] = str(result.scalar())
+        seeded["project_code"] = code
+
+    await db.commit()
+    return seeded
 
 
 @router.post("/tenants", response_model=dict, status_code=status.HTTP_201_CREATED)
@@ -101,12 +193,25 @@ async def create_tenant(
         state=body.state or "",
     )
 
+    # Seed wizard extras (IPTU rules, first project) into the NEW schema.
+    # A seeding failure must not abort the onboarding — the tenant is fully
+    # usable and the data can be re-entered later — but it is reported.
+    seeded: dict[str, Any] = {}
+    if body.iptu or body.initial_project:
+        try:
+            seeded = await _seed_onboarding_data(db, f"tenant_{body.slug}", body)
+        except Exception as exc:
+            await db.rollback()
+            logger.exception(f"[TENANT] Onboarding seed failed for {body.slug}")
+            seeded = {"seed_error": str(exc)[:300]}
+
     return {
         "tenant": TenantRead(
             id=row[0], name=row[1], slug=row[2], city=row[3],
             state=row[4], is_active=row[5], created_at=row[6],
         ).model_dump(),
         "provisioning": report,
+        "seeded": seeded,
     }
 
 
