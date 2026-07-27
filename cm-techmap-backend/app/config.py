@@ -81,8 +81,16 @@ class Settings(BaseSettings):
     upload_max_file_size_gb: int = 100
 
     # ── NodeODM (Photogrammetry Engine) ──────────────────────────────────────
+    # When NodeODM is unreachable the pipeline can fall back to a fake
+    # "simulation" run (progress bar + completed status with ZERO real assets).
+    # That is a demo aid for dev stacks only — with the flag off (default),
+    # the task fails loudly instead of fabricating results.
+    allow_simulation: bool = False
     nodeodm_host: str = "nodeodm"
     nodeodm_port: int = 3000
+    # When NodeODM is unreachable the pipeline can fall back to a SIMULATED
+    # run (fake progress, zero assets). That is a demo aid only — with this
+    # flag off (the default) the task
     nodeodm_timeout: int = 30
     nodeodm_poll_interval: int = 10
     nodeodm_default_options: str = (

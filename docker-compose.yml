@@ -191,6 +191,9 @@ services:
       - KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-admin_dev_2026}
       # Phase 2: Processing services
       - NODEODM_HOST=nodeodm
+      # Dev stacks may simulate when NodeODM is missing/underfed (<3 images).
+      # Production NEVER sets this — the pipeline fails loudly instead.
+      - ALLOW_SIMULATION=true
       - NODEODM_PORT=3000
       - TITILER_URL=http://titiler:80
       - TITILER_EXTERNAL_URL=http://localhost:18888
@@ -244,6 +247,9 @@ services:
       - MINIO_USE_SSL=false
       # Phase 2: Processing services
       - NODEODM_HOST=nodeodm
+      # Dev stacks may simulate when NodeODM is missing/underfed (<3 images).
+      # Production NEVER sets this — the pipeline fails loudly instead.
+      - ALLOW_SIMULATION=true
       - NODEODM_PORT=3000
     volumes:
       - ./cm-techmap-backend/app:/code/app:ro

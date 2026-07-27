@@ -36,16 +36,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("=" * 60)
 
     # ── Startup: refuse silently-insecure production configuration ───────
+    # These are hard failures on purpose: logging a CRITICAL and booting
+    # anyway means production runs with publicly-known credentials while
+    # every guard rail reports success.
     if settings.is_production:
         if settings.app_secret_key.startswith("CHANGE-ME"):
-            logger.critical(
-                "  SECURITY: APP_SECRET_KEY is still the placeholder value in "
-                "PRODUCTION. Generate one (openssl rand -hex 32) and set it now."
+            raise RuntimeError(
+                "SECURITY: APP_SECRET_KEY is still the placeholder value in "
+                "PRODUCTION. Generate one (openssl rand -hex 32) and set it."
             )
         if settings.keycloak_client_secret in ("CHANGE-ME-after-keycloak-setup",):
-            logger.critical(
-                "  SECURITY: KEYCLOAK_CLIENT_SECRET is still the placeholder "
-                "value in PRODUCTION — backend↔Keycloak calls will fail."
+            raise RuntimeError(
+                "SECURITY: KEYCLOAK_CLIENT_SECRET is still the placeholder "
+                "value in PRODUCTION — backend↔Keycloak calls would all fail."
             )
         if settings.app_debug:
             logger.warning("  APP_DEBUG=true in production — disable it.")
@@ -151,8 +154,11 @@ app = FastAPI(
         "digital twin generation, and AI-powered urban analytics."
     ),
     version=settings.app_version,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    # Swagger enumerates the whole API surface — dev-only. In production the
+    # nginx gateway also 404s these paths (defense in depth).
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
+    openapi_url=None if settings.is_production else "/openapi.json",
     lifespan=lifespan,
 )
 

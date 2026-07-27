@@ -18,6 +18,11 @@ from celery import shared_task
 from app.config import get_settings
 from app.core.pubsub import publish_progress
 
+
+class NonRetryableProcessingError(RuntimeError):
+    """The environment cannot run this pipeline at all (e.g. NodeODM absent
+    and ALLOW_SIMULATION off) — retrying would never succeed."""
+
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
@@ -210,7 +215,16 @@ def process_drone_upload(
             _run_async(odm.remove_task(odm_uuid))
 
         else:
-            # NodeODM not available or insufficient images — simulate
+            if not get_settings().allow_simulation:
+                # Without this gate the branch below publishes a fake progress
+                # bar and marks the flight "completed" with zero real assets —
+                # users believe their upload was processed when nothing ran.
+                raise NonRetryableProcessingError(
+                    "Motor de fotogrametria (NodeODM) indisponível neste "
+                    "ambiente e ALLOW_SIMULATION está desativado — "
+                    "processamento abortado em vez de fabricar resultados."
+                )
+            # NodeODM not available or insufficient images — simulate (dev only)
             logger.warning("  NodeODM unavailable or <3 images. Running simulation.")
             publish_progress(task_id, "odm_processing", 40,
                              "NodeODM unavailable — running simulation...")
@@ -642,6 +656,9 @@ def process_drone_upload(
             ))
         except Exception:
             pass
+
+        if isinstance(exc, NonRetryableProcessingError):
+            raise exc
 
         raise self.retry(exc=exc)
 

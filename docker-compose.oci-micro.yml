@@ -20,6 +20,13 @@
 
 name: cm-techmap-oci
 
+# Container logs rotate — an unbounded json-file log can fill the VM disk.
+x-logging: &cm-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # ────────────────────────────────────────────────────────────────────────────
   # PostgreSQL + PostGIS (ultra-constrained)
@@ -28,6 +35,7 @@ services:
     image: postgis/postgis:16-3.5
     container_name: cmo-postgres
     restart: always
+    logging: *cm-logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-cm_techmap}
       POSTGRES_USER: ${POSTGRES_USER:-cm_techmap_oci}
@@ -42,7 +50,7 @@ services:
         -c checkpoint_completion_target=0.9
         -c wal_buffers=4MB
         -c work_mem=4MB
-        -c max_connections=20
+        -c max_connections=50
         -c max_worker_processes=2
         -c max_parallel_workers=2
         -c max_parallel_workers_per_gather=1
@@ -76,11 +84,12 @@ services:
     image: redis:7-alpine
     container_name: cmo-redis
     restart: always
+    logging: *cm-logging
     command: >
       redis-server
         --appendonly yes
         --maxmemory 64mb
-        --maxmemory-policy allkeys-lru
+        --maxmemory-policy noeviction
         --save 300 100
         --tcp-keepalive 300
     ports:
@@ -106,6 +115,7 @@ services:
     image: quay.io/minio/minio:latest
     container_name: cmo-minio
     restart: always
+    logging: *cm-logging
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-cm_techmap_oci}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
@@ -154,6 +164,7 @@ services:
     # tini as PID 1 reaps the cat/grep orphans left by the health probe
     init: true
     restart: always
+    logging: *cm-logging
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD must be set}
@@ -207,6 +218,7 @@ services:
       dockerfile: Dockerfile
     container_name: cmo-backend
     restart: always
+    logging: *cm-logging
     command: >
       uvicorn app.main:app
         --host 0.0.0.0
@@ -218,7 +230,9 @@ services:
       - APP_ENV=production
       - APP_DEBUG=false
       - APP_SECRET_KEY=${APP_SECRET_KEY:?APP_SECRET_KEY must be set}
-      - APP_CORS_ORIGINS=${APP_CORS_ORIGINS:-*}
+      # Pin CORS to the real frontend — "*" lets any site call the API.
+      # (The main path is same-origin anyway: Vercel proxies /api server-side.)
+      - APP_CORS_ORIGINS=${APP_CORS_ORIGINS:-https://cm-techmap-frontend.vercel.app}
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cm_techmap_oci}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cm_techmap}
       - DATABASE_URL_SYNC=postgresql+psycopg2://${POSTGRES_USER:-cm_techmap_oci}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cm_techmap}
       - DATABASE_URL_DIRECT=postgresql+asyncpg://${POSTGRES_USER:-cm_techmap_oci}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cm_techmap}
@@ -240,6 +254,14 @@ services:
       # Tile servers (added so the map works in production)
       - TITILER_URL=http://titiler:80
       - MARTIN_URL=http://martin:3000
+      # Issuers accepted beyond the internal URL (tokens minted via the
+      # public /realms proxy carry the external hostname as `iss`)
+      - KEYCLOAK_EXTERNAL_URL=${KEYCLOAK_EXTERNAL_URL:-}
+      - KEYCLOAK_EXTRA_ISSUERS=${KEYCLOAK_EXTRA_ISSUERS:-}
+      # Connection budget: postgres max_connections=50 must fit backend +
+      # worker + beat + Keycloak + Martin — keep app pools tiny.
+      - DATABASE_POOL_SIZE=${DATABASE_POOL_SIZE:-3}
+      - DATABASE_MAX_OVERFLOW=${DATABASE_MAX_OVERFLOW:-2}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -273,6 +295,7 @@ services:
       dockerfile: Dockerfile
     container_name: cmo-celery-worker
     restart: always
+    logging: *cm-logging
     command: >
       celery -A app.celery_app worker
         --loglevel=warning
@@ -282,8 +305,12 @@ services:
         -n worker@%h
     environment:
       - APP_ENV=production
+      - APP_SECRET_KEY=${APP_SECRET_KEY:?APP_SECRET_KEY must be set}
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cm_techmap_oci}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cm_techmap}
       - DATABASE_URL_SYNC=postgresql+psycopg2://${POSTGRES_USER:-cm_techmap_oci}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cm_techmap}
+      - DATABASE_URL_DIRECT=postgresql+asyncpg://${POSTGRES_USER:-cm_techmap_oci}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cm_techmap}
+      - DATABASE_POOL_SIZE=${DATABASE_POOL_SIZE:-3}
+      - DATABASE_MAX_OVERFLOW=${DATABASE_MAX_OVERFLOW:-2}
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
@@ -291,6 +318,17 @@ services:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-cm_techmap_oci}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
       - MINIO_USE_SSL=false
+      # Worker tasks talk to Keycloak (tenant health), TiTiler (tile warmup)
+      # and Groq (report narratives) — without these they silently degrade.
+      - KEYCLOAK_SERVER_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-cm-techmap}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-cm-techmap-api}
+      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
+      - KEYCLOAK_TIMEOUT=${KEYCLOAK_TIMEOUT:-45}
+      - TITILER_URL=http://titiler:80
+      - MARTIN_URL=http://martin:3000
+      - GROQ_ENABLED=${GROQ_ENABLED:-false}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -306,6 +344,37 @@ services:
           memory: 128M
 
   # ────────────────────────────────────────────────────────────────────────────
+  # Celery Beat — scheduler (backups, cleanups, tenant health, metrics)
+  # Without it NONE of the beat_schedule tasks ever run — including the
+  # nightly database backup.
+  # ────────────────────────────────────────────────────────────────────────────
+  celery-beat:
+    build:
+      context: ./cm-techmap-backend
+      dockerfile: Dockerfile
+    container_name: cmo-celery-beat
+    restart: always
+    logging: *cm-logging
+    command: >
+      celery -A app.celery_app beat
+        --loglevel=info
+        --schedule=/tmp/celerybeat-schedule
+    environment:
+      - APP_ENV=production
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - cm-network
+    deploy:
+      resources:
+        limits:
+          memory: 160M
+
+  # ────────────────────────────────────────────────────────────────────────────
   # Nginx — Reverse Proxy (HTTP only for micro instance)
   # ────────────────────────────────────────────────────────────────────────────
   nginx:
@@ -316,6 +385,7 @@ services:
       dockerfile: Dockerfile.oci-micro
     container_name: cmo-nginx
     restart: always
+    logging: *cm-logging
     environment:
       DOMAIN_NAME: ${DOMAIN_NAME:-_}
     ports:
@@ -348,6 +418,7 @@ services:
     image: ghcr.io/developmentseed/titiler:latest
     container_name: cmo-titiler
     restart: always
+    logging: *cm-logging
     environment:
       # Reads COGs straight from MinIO over the S3 protocol
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-cm_techmap_oci}
@@ -390,6 +461,7 @@ services:
     image: ghcr.io/maplibre/martin:latest
     container_name: cmo-martin
     restart: always
+    logging: *cm-logging
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-cm_techmap_oci}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cm_techmap}
       RUST_LOG: warn
