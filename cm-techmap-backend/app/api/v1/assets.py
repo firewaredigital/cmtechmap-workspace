@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
 from app.core.storage import upload_file as minio_upload
@@ -67,13 +68,26 @@ async def upload_geotiff(
     work_dir = tempfile.mkdtemp(prefix="cm_geotiff_")
 
     try:
-        # ── Step 1: Save to temp ──────────────────────────────────────
-        local_input = os.path.join(work_dir, file.filename)
+        # ── Step 1: Stream to temp ────────────────────────────────────
+        # Never `await file.read()` here: a single 2 GB GeoTIFF (the gateway
+        # limit) would be loaded whole into a 384 MB container and OOM-kill
+        # the API for every other user. Stream in chunks and stop early if
+        # the file exceeds the configured ceiling.
+        max_bytes = settings.upload_max_file_size_gb * 1024 * 1024 * 1024
+        local_input = os.path.join(work_dir, os.path.basename(file.filename))
+        file_size_raw = 0
         with open(local_input, "wb") as f:
-            content = await file.read()
-            f.write(content)
-
-        file_size_raw = os.path.getsize(local_input)
+            while chunk := await file.read(8 * 1024 * 1024):
+                file_size_raw += len(chunk)
+                if file_size_raw > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            f"Arquivo excede o limite de "
+                            f"{settings.upload_max_file_size_gb} GB."
+                        ),
+                    )
+                f.write(chunk)
         logger.info(f"[GEOTIFF] Received: {file.filename} ({file_size_raw / 1024 / 1024:.1f} MB)")
 
         # ── Step 2: Extract geospatial metadata ───────────────────────
@@ -97,8 +111,11 @@ async def upload_geotiff(
         # ── Step 3: Convert to COG ────────────────────────────────────
         from app.core.cog_converter import convert_to_cog, validate_cog
 
-        cog_path = convert_to_cog(local_input)
-        is_valid = validate_cog(cog_path)
+        # GDAL conversion takes minutes on this hardware and is fully
+        # blocking — running it inline would freeze every other request
+        # (health check included) served by this single-worker process.
+        cog_path = await run_in_threadpool(convert_to_cog, local_input)
+        is_valid = await run_in_threadpool(validate_cog, cog_path)
 
         if not is_valid:
             # If COG conversion fails, use original

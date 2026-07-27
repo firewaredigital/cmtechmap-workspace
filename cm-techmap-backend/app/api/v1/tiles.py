@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
 from app.dependencies import get_db, require_viewer
@@ -247,6 +248,50 @@ async def get_raster_tile(
 _FLAT_DEM_TILE_CACHE: bytes | None = None
 
 
+def _normalize_terrain_tile(
+    png_bytes: bytes,
+    base_elevation: float,
+    max_relative_elev: float,
+    dsm_source: str,
+) -> bytes:
+    """
+    Rebase a Terrarium-encoded elevation tile to relative heights.
+
+    Pure CPU (PIL + numpy + optional scipy) — must be called through
+    run_in_threadpool so it never blocks the API event loop.
+
+    Terrarium formula: elevation = (R * 256 + G + B / 256) - 32768
+    """
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    arr = np.array(img, dtype=np.float64)
+    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+    elevation = (r * 256.0 + g + b / 256.0) - 32768.0
+
+    # Subtract base elevation → relative heights
+    elevation = np.clip(elevation - base_elevation, 0.0, max_relative_elev)
+
+    # Synthetic DSMs carry pixel-level noise that reads as jagged spikes
+    if dsm_source == "synthetic":
+        from scipy.ndimage import gaussian_filter
+        elevation = gaussian_filter(elevation, sigma=2.0)
+
+    val = elevation + 32768.0
+    out = np.stack([
+        np.floor(val / 256.0).astype(np.uint8),
+        np.floor(val % 256.0).astype(np.uint8),
+        np.floor((val - np.floor(val)) * 256.0).astype(np.uint8),
+    ], axis=-1)
+
+    buf = io.BytesIO()
+    Image.fromarray(out, "RGB").save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _flat_dem_tile() -> Response:
     """Return a valid 256×256 flat Terrarium DEM PNG (elevation=0 everywhere).
 
@@ -383,41 +428,16 @@ async def get_terrain_tile(
                 # Normalize the tile: subtract base elevation + apply source-specific processing
                 if base_elevation > 10.0 or dsm_source == "synthetic":
                     try:
-                        import io
-
-                        import numpy as np
-                        from PIL import Image
-
-                        # Decode Terrarium PNG → elevation array
-                        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-                        arr = np.array(img, dtype=np.float64)
-                        r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
-                        elevation = (r * 256.0 + g + b / 256.0) - 32768.0
-
-                        # Subtract base elevation → relative heights
-                        elevation = elevation - base_elevation
-                        elevation = np.clip(elevation, 0.0, max_relative_elev)
-
-                        # For synthetic DSMs: apply per-tile Gaussian smooth
-                        # to eliminate the jagged pixel-level noise
-                        if dsm_source == "synthetic":
-                            from scipy.ndimage import gaussian_filter
-                            elevation = gaussian_filter(elevation, sigma=2.0)
-
-                        # Re-encode to Terrarium: val = elevation + 32768
-                        val = elevation + 32768.0
-                        r_out = np.floor(val / 256.0).astype(np.uint8)
-                        g_out = np.floor(val % 256.0).astype(np.uint8)
-                        b_out = np.floor((val - np.floor(val)) * 256.0).astype(np.uint8)
-
-                        out = np.stack([r_out, g_out, b_out], axis=-1)
-                        out_img = Image.fromarray(out, "RGB")
-                        buf = io.BytesIO()
-                        out_img.save(buf, format="PNG")
-                        buf.seek(0)
-
+                        # Decode/filter/re-encode is pure CPU work. Panning the
+                        # map fires hundreds of tile requests; doing this inline
+                        # would block the event loop of the single API worker
+                        # and stall every other request.
+                        normalized = await run_in_threadpool(
+                            _normalize_terrain_tile,
+                            resp.content, base_elevation, max_relative_elev, dsm_source,
+                        )
                         return Response(
-                            content=buf.getvalue(),
+                            content=normalized,
                             media_type="image/png",
                             headers={"Cache-Control": "public, max-age=86400"},
                         )
