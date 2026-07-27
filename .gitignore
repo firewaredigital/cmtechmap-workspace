@@ -53,3 +53,6 @@ oci-deploy/.stop-retry
 # Instalacao local: segredos e backups
 deploy/local/.env.local
 deploy/local/backups/
+
+# Pacotes de instalacao gerados
+deploy/local/dist/
