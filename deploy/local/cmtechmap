@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# CM TECHMAP — Operação da instalação local
+#
+#   ./cmtechmap start      sobe a plataforma
+#   ./cmtechmap stop       para (dados preservados)
+#   ./cmtechmap restart    reinicia os serviços de aplicação
+#   ./cmtechmap status     estado dos serviços + endereço de acesso
+#   ./cmtechmap logs [svc] acompanha os logs
+#   ./cmtechmap backup     dump do banco + objetos do MinIO
+#   ./cmtechmap update     recompila e sobe a versão nova do código
+#   ./cmtechmap uninstall  remove tudo (pergunta antes de apagar dados)
+# ==============================================================================
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="$HERE/docker-compose.local.yml"
+ENV_FILE="$HERE/.env.local"
+HOSTS_FILE="/etc/hosts"
+
+[[ -f "$ENV_FILE" ]] || { echo "Instalação não encontrada. Rode primeiro: sudo ./install.sh" >&2; exit 1; }
+
+if [[ -t 1 ]]; then BOLD=$'\033[1m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RESET=$'\033[0m'
+else BOLD=""; GREEN=""; YELLOW=""; RESET=""; fi
+
+dc() { docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
+get_env() { grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-; }
+
+DOMAIN="$(get_env CM_DOMAIN)"; DOMAIN="${DOMAIN:-cmtechmap.local}"
+SUFFIX="$(get_env CM_PORT_SUFFIX)"
+BASE_URL="http://${DOMAIN}${SUFFIX}"
+
+case "${1:-status}" in
+    start)
+        echo "${BOLD}Iniciando CM TECHMAP...${RESET}"
+        dc up -d --remove-orphans
+        echo "  Acesse: ${BOLD}$BASE_URL${RESET}"
+        echo "  (o serviço de autenticação leva ~1 min para ficar pronto)"
+        ;;
+
+    stop)
+        echo "${BOLD}Parando CM TECHMAP...${RESET} (os dados são preservados)"
+        dc stop
+        ;;
+
+    restart)
+        # Só os serviços de aplicação: recriar o Keycloak custa minutos de
+        # indisponibilidade porque ele refaz a augmentation do Quarkus.
+        echo "${BOLD}Reiniciando serviços de aplicação...${RESET}"
+        dc restart backend celery-worker celery-beat gateway frontend
+        ;;
+
+    status)
+        echo "${BOLD}Serviços:${RESET}"
+        dc ps --format 'table {{.Service}}\t{{.Status}}' 2>/dev/null || dc ps
+        echo
+        printf "${BOLD}Endereço:${RESET} %s  " "$BASE_URL"
+        # `|| true` (não `|| echo 000`): em falha o curl JÁ imprime 000, e sem
+        # o `|| true` seu código de saída 6 mataria o script sob `set -e`.
+        CODE="$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$BASE_URL/api/v1/health" 2>/dev/null || true)"
+        CODE="${CODE:-000}"
+        if [[ "$CODE" == "200" ]]; then
+            echo "${GREEN}(no ar)${RESET}"
+        elif [[ "$CODE" == "000" ]]; then
+            echo "${YELLOW}(inacessível)${RESET}"
+            echo "  ${YELLOW}O nome '$DOMAIN' não resolve nesta máquina.${RESET}"
+            echo "  Rode o instalador com sudo para registrá-lo no arquivo de hosts."
+        else
+            echo "${YELLOW}(HTTP $CODE)${RESET}"
+        fi
+        echo
+        echo "${BOLD}Uso de recursos:${RESET}"
+        docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}' \
+            $(dc ps -q 2>/dev/null) 2>/dev/null | head -14 || true
+        ;;
+
+    logs)
+        shift || true
+        dc logs -f --tail=100 "$@"
+        ;;
+
+    backup)
+        STAMP="$(date +%Y%m%d-%H%M%S)"
+        DEST="$HERE/backups/$STAMP"
+        mkdir -p "$DEST"
+        echo "${BOLD}Gerando backup em $DEST...${RESET}"
+        dc exec -T postgres pg_dump -U "$(get_env POSTGRES_USER)" -d "$(get_env POSTGRES_DB)" \
+            > "$DEST/banco.sql"
+        echo "  banco: $(du -h "$DEST/banco.sql" | cut -f1)"
+        # Objetos do MinIO (ortomosaicos, relatórios) — copiados pelo próprio
+        # container, que já tem as credenciais configuradas.
+        dc exec -T minio sh -c 'tar -cf - -C /data .' > "$DEST/objetos.tar" 2>/dev/null || \
+            echo "  ${YELLOW}aviso: falha ao exportar objetos do MinIO${RESET}"
+        [[ -f "$DEST/objetos.tar" ]] && echo "  objetos: $(du -h "$DEST/objetos.tar" | cut -f1)"
+        echo "${GREEN}Backup concluído.${RESET}"
+        ;;
+
+    update)
+        echo "${BOLD}Atualizando para a versão mais recente do código...${RESET}"
+        dc build --pull backend frontend
+        dc up -d backend celery-worker celery-beat frontend gateway
+        sleep 15
+        dc exec -T backend alembic upgrade head
+        echo "${GREEN}Atualizado.${RESET} Acesse: $BASE_URL"
+        ;;
+
+    uninstall)
+        echo "${BOLD}Removendo a instalação local do CM TECHMAP.${RESET}"
+        read -r -p "  Apagar TAMBÉM os dados (banco, imagens, relatórios)? [s/N] " WIPE
+        if [[ "$WIPE" =~ ^[sSyY]$ ]]; then
+            dc down -v --remove-orphans
+            echo "  containers e dados removidos"
+        else
+            dc down --remove-orphans
+            echo "  containers removidos; ${BOLD}dados preservados${RESET} nos volumes cml-*"
+        fi
+        if [[ $EUID -eq 0 ]]; then
+            sed -i "/^127\.0\.0\.1[[:space:]]\+${DOMAIN}$/d; /# CM TECHMAP (instalacao local)/d" "$HOSTS_FILE"
+            echo "  entrada de $DOMAIN removida de $HOSTS_FILE"
+        else
+            echo "  ${YELLOW}rode com sudo para remover $DOMAIN de $HOSTS_FILE${RESET}"
+        fi
+        echo "${GREEN}Desinstalado.${RESET}"
+        ;;
+
+    *)
+        grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -14
+        exit 1
+        ;;
+esac

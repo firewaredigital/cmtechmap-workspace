@@ -49,3 +49,7 @@ oci-deploy/terraform/tfplan
 oci-deploy/a1-retry.log
 oci-deploy/.a1-ip
 oci-deploy/.stop-retry
+
+# Instalacao local: segredos e backups
+deploy/local/.env.local
+deploy/local/backups/
