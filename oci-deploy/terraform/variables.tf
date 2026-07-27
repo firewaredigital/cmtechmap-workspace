@@ -68,6 +68,26 @@ variable "instance_shape" {
   default     = "VM.Standard.A1.Flex"
 }
 
+variable "availability_domain_index" {
+  description = <<-EOT
+    Qual availability domain usar (0 = primeiro).
+
+    O shape A1.Flex do Always Free é MUITO disputado: a Oracle responde
+    "Out of host capacity" quando o AD escolhido está lotado. Em regiões com
+    mais de um AD (ex.: us-ashburn-1 tem 3), tentar outro índice costuma
+    resolver sem trocar de região. Regiões brasileiras têm apenas 1 AD —
+    nesse caso a saída é repetir a tentativa ao longo do tempo ou mudar de
+    região, já que a capacidade é liberada de forma intermitente.
+  EOT
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.availability_domain_index >= 0 && var.availability_domain_index <= 2
+    error_message = "Índice de AD deve estar entre 0 e 2 (nenhuma região OCI tem mais de 3 ADs)"
+  }
+}
+
 variable "instance_ocpus" {
   description = "Número de OCPUs (max 4 para Always Free)"
   type        = number

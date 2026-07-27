@@ -47,8 +47,14 @@ data "oci_core_images" "ubuntu_arm" {
 }
 
 locals {
-  availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
-  image_id            = var.os_image_id != "" ? var.os_image_id : data.oci_core_images.ubuntu_arm.images[0].id
+  # NÃO fixar em [0]: quando esse AD está sem capacidade de A1 (o erro mais
+  # comum do Always Free), trocar o índice permite tentar outro AD sem editar
+  # o main.tf. Faz o módulo cair no último AD existente se o índice pedido não
+  # existir naquela região (as brasileiras têm apenas 1).
+  availability_domain = data.oci_identity_availability_domains.ads.availability_domains[
+    min(var.availability_domain_index, length(data.oci_identity_availability_domains.ads.availability_domains) - 1)
+  ].name
+  image_id = var.os_image_id != "" ? var.os_image_id : data.oci_core_images.ubuntu_arm.images[0].id
   # templatefile (NOT file): cloud-init.yaml interpolates ${ssh_public_key};
   # plain file() would write the literal string as the authorized key and the
   # `deploy` user could never log in.
