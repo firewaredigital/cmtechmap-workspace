@@ -93,6 +93,23 @@ gen_secret() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32; }
 if [[ -f "$ENV_FILE" ]]; then
     ok "Reaproveitando $ENV_FILE (segredos preservados)"
 else
+    # Volumes de uma instalação anterior guardam as senhas ANTIGAS: o
+    # POSTGRES_PASSWORD só vale na primeira inicialização do banco. Gerar
+    # segredos novos sobre dados antigos deixa Postgres/Keycloak/Martin em
+    # loop de "password authentication failed" — falhar aqui é mais honesto.
+    STALE="$(docker volume ls -q --filter 'name=^cml-' 2>/dev/null | tr '\n' ' ')"
+    if [[ -n "${STALE// }" ]]; then
+        echo "  ${YELLOW}Encontrei dados de uma instalação anterior:${RESET} ${STALE}"
+        echo "  Mas o arquivo de segredos ($ENV_FILE) não existe mais, e as senhas"
+        echo "  gravadas nesses volumes não podem ser recuperadas."
+        echo
+        echo "  Opções:"
+        echo "    • recuperar o .env.local antigo (backup?) e rodar de novo"
+        echo "    • apagar os dados e instalar do zero:"
+        echo "        docker volume rm ${STALE}"
+        echo "        sudo ./install.sh"
+        die "Instalação interrompida para não corromper dados existentes."
+    fi
     [[ -f "$ENV_EXAMPLE" ]] || die "Modelo não encontrado: $ENV_EXAMPLE"
     cp "$ENV_EXAMPLE" "$ENV_FILE"
     # Um segredo diferente por linha marcada com GERAR
@@ -125,33 +142,47 @@ esac
 ok "Domínio: $DOMAIN"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "3/7 Definindo a porta HTTP"
+step "3/7 Escolhendo a porta HTTP"
 
-[[ -n "$PORT" ]] && set_env CM_HTTP_PORT "$PORT"
-PORT="$(get_env CM_HTTP_PORT)"; PORT="${PORT:-80}"
-
+# Seleção DINÂMICA: nunca para serviços de terceiros para tomar a porta.
+# Se a preferida estiver ocupada (Apache, IIS, outro projeto), procura a
+# próxima livre e segue — o domínio continua limpo, só ganha o sufixo.
 port_busy() { ss -tln 2>/dev/null | grep -qE "[:.]$1[[:space:]]"; }
 
-if port_busy "$PORT"; then
-    HOLDER="$(ss -tlnp 2>/dev/null | grep -E "[:.]$PORT[[:space:]]" | grep -oE 'users:\(\("[^"]+' | head -1 | cut -d'"' -f2)"
-    warn "A porta $PORT já está em uso${HOLDER:+ por: $HOLDER}."
-    echo "     A URL limpa (sem porta) exige a 80. Opções:"
-    echo "       a) liberar a porta parando o serviço atual"
-    echo "       b) usar outra porta — a URL vira http://$DOMAIN:PORTA"
-    if [[ -n "$HOLDER" ]] && ask "Parar e desabilitar o serviço '$HOLDER' para liberar a porta $PORT?"; then
-        systemctl stop "$HOLDER" 2>/dev/null || true
-        systemctl disable "$HOLDER" 2>/dev/null || true
-        sleep 2
-        port_busy "$PORT" && die "A porta $PORT continua ocupada. Libere-a manualmente e rode de novo."
-        ok "Porta $PORT liberada ($HOLDER parado)"
+port_holder() {
+    ss -tlnp 2>/dev/null | grep -E "[:.]$1[[:space:]]" \
+        | grep -oE 'users:\(\("[^"]+' | head -1 | cut -d'"' -f2
+}
+
+if [[ -n "$PORT" ]]; then
+    # Porta pedida explicitamente com --port: respeitar ou falhar claramente
+    port_busy "$PORT" && die "A porta $PORT (pedida com --port) já está em uso por: $(port_holder "$PORT")"
+    set_env CM_HTTP_PORT "$PORT"
+else
+    PREFERRED="$(get_env CM_HTTP_PORT)"; PREFERRED="${PREFERRED:-80}"
+    if ! port_busy "$PREFERRED"; then
+        PORT="$PREFERRED"
+        ok "Porta $PORT livre — a URL fica sem sufixo"
     else
-        ALT=8090
-        while port_busy "$ALT"; do ALT=$((ALT + 1)); done
-        warn "Usando a porta alternativa $ALT"
-        PORT="$ALT"
+        HOLDER="$(port_holder "$PREFERRED")"
+        warn "Porta $PREFERRED ocupada${HOLDER:+ por '$HOLDER'} — mantida intacta"
+        PORT=""
+        for CANDIDATE in 8080 8090 8100 8200 8888 9080 9090; do
+            port_busy "$CANDIDATE" || { PORT="$CANDIDATE"; break; }
+        done
+        if [[ -z "$PORT" ]]; then
+            # Nenhuma das preferidas: varrer faixa alta até achar uma livre
+            PORT=8300
+            while port_busy "$PORT"; do
+                PORT=$((PORT + 1))
+                (( PORT > 8500 )) && die "Nenhuma porta livre entre 8300 e 8500."
+            done
+        fi
         set_env CM_HTTP_PORT "$PORT"
+        ok "Porta $PORT escolhida automaticamente"
     fi
 fi
+PORT="$(get_env CM_HTTP_PORT)"
 
 # O Keycloak monta o emissor dos tokens a partir desta URL; se o sufixo de
 # porta não acompanhar, todo token é recusado com "Invalid token issuer".

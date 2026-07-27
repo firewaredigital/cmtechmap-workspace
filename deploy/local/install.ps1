@@ -87,6 +87,23 @@ function New-Secret {
 if (Test-Path $EnvFile) {
     Write-Ok "Reaproveitando .env.local (segredos preservados)"
 } else {
+    # Volumes de uma instalacao anterior guardam as senhas ANTIGAS: o
+    # POSTGRES_PASSWORD so vale na primeira inicializacao do banco. Gerar
+    # segredos novos sobre dados antigos deixa Postgres/Keycloak/Martin em
+    # loop de "password authentication failed" - falhar aqui e mais honesto.
+    $stale = (docker volume ls -q --filter "name=^cml-" 2>$null) -join " "
+    if ($stale.Trim() -ne "") {
+        Write-Host "  Encontrei dados de uma instalacao anterior: $stale" -ForegroundColor Yellow
+        Write-Host "  Mas o arquivo de segredos (.env.local) nao existe mais, e as senhas"
+        Write-Host "  gravadas nesses volumes nao podem ser recuperadas."
+        Write-Host ""
+        Write-Host "  Opcoes:"
+        Write-Host "    - recuperar o .env.local antigo (backup?) e rodar de novo"
+        Write-Host "    - apagar os dados e instalar do zero:"
+        Write-Host "        docker volume rm $stale"
+        Write-Host "        .\install.ps1"
+        Stop-Fail "Instalacao interrompida para nao corromper dados existentes."
+    }
     if (-not (Test-Path $EnvExample)) { Stop-Fail "Modelo nao encontrado: $EnvExample" }
     # Preserva UTF-8 sem BOM: o Docker Compose nao interpreta BOM em .env
     $lines = Get-Content $EnvExample
@@ -124,30 +141,48 @@ Write-Ok "Dominio: $Domain"
 # ==============================================================================
 Write-Step "3/7 Definindo a porta HTTP"
 
-if ($Port -gt 0) { Set-EnvValue "CM_HTTP_PORT" $Port }
-$PortValue = [int](Get-EnvValue "CM_HTTP_PORT")
-if ($PortValue -eq 0) { $PortValue = 80 }
-
 function Test-PortBusy { param($p)
     $c = Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue
     return ($null -ne $c)
 }
+function Get-PortHolder { param($p)
+    $conn = Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    if (-not $conn) { return "" }
+    $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+    if ($proc) { return $proc.ProcessName } else { return "desconhecido" }
+}
 
-if (Test-PortBusy $PortValue) {
-    $proc = Get-Process -Id (Get-NetTCPConnection -State Listen -LocalPort $PortValue |
-            Select-Object -First 1).OwningProcess -ErrorAction SilentlyContinue
-    $holder = if ($proc) { $proc.ProcessName } else { "desconhecido" }
-    Write-Warn "A porta $PortValue ja esta em uso por: $holder"
-    Write-Host "     No Windows costuma ser IIS, 'World Wide Web Publishing Service' ou Skype."
-    Write-Host "     A URL limpa (sem porta) exige a 80."
-    if (Ask "Usar uma porta alternativa? (a URL ficara http://${Domain}:PORTA)") {
-        $alt = 8090
-        while (Test-PortBusy $alt) { $alt++ }
-        $PortValue = $alt
-        Set-EnvValue "CM_HTTP_PORT" $PortValue
-        Write-Warn "Usando a porta $PortValue"
+# Selecao DINAMICA: nunca para servicos de terceiros para tomar a porta.
+# Se a preferida estiver ocupada (IIS, Skype, outro projeto), procura a
+# proxima livre e segue.
+if ($Port -gt 0) {
+    # Porta pedida explicitamente com -Port: respeitar ou falhar claramente
+    if (Test-PortBusy $Port) {
+        Stop-Fail "A porta $Port (pedida com -Port) ja esta em uso por: $(Get-PortHolder $Port)"
+    }
+    Set-EnvValue "CM_HTTP_PORT" $Port
+    $PortValue = $Port
+} else {
+    $preferred = [int](Get-EnvValue "CM_HTTP_PORT")
+    if ($preferred -eq 0) { $preferred = 80 }
+    if (-not (Test-PortBusy $preferred)) {
+        $PortValue = $preferred
+        Write-Ok "Porta $PortValue livre - a URL fica sem sufixo"
     } else {
-        Stop-Fail "Libere a porta $PortValue e rode novamente.`n    Ex.: net stop W3SVC   (para o IIS)"
+        $holder = Get-PortHolder $preferred
+        Write-Warn "Porta $preferred ocupada$(if ($holder) { " por '$holder'" }) - mantida intacta"
+        $PortValue = 0
+        foreach ($c in @(8080, 8090, 8100, 8200, 8888, 9080, 9090)) {
+            if (-not (Test-PortBusy $c)) { $PortValue = $c; break }
+        }
+        if ($PortValue -eq 0) {
+            $PortValue = 8300
+            while ((Test-PortBusy $PortValue) -and ($PortValue -le 8500)) { $PortValue++ }
+            if ($PortValue -gt 8500) { Stop-Fail "Nenhuma porta livre entre 8300 e 8500." }
+        }
+        Set-EnvValue "CM_HTTP_PORT" $PortValue
+        Write-Ok "Porta $PortValue escolhida automaticamente"
     }
 }
 
