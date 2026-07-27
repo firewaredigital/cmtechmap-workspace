@@ -60,9 +60,13 @@ else
     echo ">> 3/5 Build pulado (--skip-build)"
 fi
 
-echo ">> 4/5 Subindo serviços e aplicando migrações..."
+echo ">> 4/5 Subindo serviços de aplicação e aplicando migrações..."
+# Só os serviços que mudam a cada deploy. Recriar o Keycloak custa ~20 min de
+# autenticação fora do ar nesta VM: ao detectar mudança de configuração ele
+# refaz a augmentation do Quarkus (~7 min) e ainda precisa aquecer o JIT.
+# Postgres/Redis/MinIO têm estado e não devem ser reciclados à toa.
 ssh_vm "cd $REMOTE_DIR && \
-    docker compose --env-file .env.oci -f $COMPOSE up -d --remove-orphans && \
+    docker compose --env-file .env.oci -f $COMPOSE up -d backend celery-worker celery-beat nginx && \
     sleep 20 && \
     docker compose --env-file .env.oci -f $COMPOSE exec -T backend alembic upgrade head"
 

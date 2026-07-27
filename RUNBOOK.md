@@ -81,11 +81,29 @@ curl -s http://127.0.0.1/api/v1/health/ready | python3 -m json.tool
 | Sintoma | Causa provável | Ação |
 |---|---|---|
 | Site carrega, API dá 502 | Vercel apontando p/ host morto | Conferir `rewrites` no `vercel.json`; devem apontar p/ `143.47.116.9` |
-| Login 503 | Keycloak frio (JIT ~14 s) | Esperar ~5 min após restart; `KEYCLOAK_TIMEOUT=45` já cobre |
+| Login 503 logo após deploy | Keycloak recriado | **Esperar até 20 min.** Ver "Custo de recriar o Keycloak" abaixo |
+| Login lento na 1ª chamada | JIT frio (~14 s) | Normal; `KEYCLOAK_TIMEOUT=45` cobre. Chamadas seguintes ficam <1 s |
 | 401 em toda API autenticada | `iss` do token fora do conjunto aceito | Conferir `KEYCLOAK_EXTERNAL_URL`/`KEYCLOAK_EXTRA_ISSUERS` no `.env.oci` |
 | Upload 504 | Timeout do gateway | Rotas `/api/v1/(assets\|uploads)/` têm 1800 s; conferir nginx |
 | HTTP 429 | Rate limit (login 5r/s, API 30r/s) | Esperado sob rajada; ajustar zonas em `nginx.oci-micro.conf` |
 | Container reiniciando em loop | OOM ou healthcheck falhando | `docker stats`, `docker logs`; ver limites em `deploy.resources` |
+
+### Custo de recriar o Keycloak
+
+Medido em 27/07/2026: recriar `cmo-keycloak` derruba a autenticação por
+**~20 minutos** — o container detecta mudança de configuração e refaz a
+augmentation do Quarkus (**409 s** medidos), depois ainda precisa aquecer o
+JIT (1ª chamada ~14 s, seguintes <1 s). Enquanto isso todo login responde
+`503 Serviço de autenticação indisponível`.
+
+Por isso `deploy-vm.sh` sobe **apenas** `backend`, `celery-worker`,
+`celery-beat` e `nginx`. Nunca rode `docker compose up -d` sem lista de
+serviços em produção — isso recicla Keycloak, Postgres, Redis e MinIO junto.
+
+Se precisar mesmo recriar o Keycloak, avise os usuários e acompanhe:
+```bash
+docker logs -f cmo-keycloak     # espere "Listening on http://0.0.0.0:8080"
+```
 
 ---
 

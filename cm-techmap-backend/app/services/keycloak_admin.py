@@ -4,6 +4,7 @@ Full lifecycle management of users via Keycloak Admin REST API.
 Handles CRUD, role assignment, status management, and audit logging.
 """
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -361,17 +362,21 @@ class KeycloakAdminService:
         """Get aggregate user statistics."""
         headers = await self._headers()
         async with httpx.AsyncClient(timeout=settings.keycloak_timeout) as client:
-            # Total users
-            count_resp = await client.get(f"{KC_ADMIN_URL}/users/count", headers=headers)
-            total = count_resp.json() if count_resp.status_code == 200 else 0
-
-            # Active sessions
-            sessions_resp = await client.get(
-                f"{KC_ADMIN_URL}/client-session-stats",
-                headers=headers,
+            # These two calls are independent — issuing them sequentially made
+            # the endpoint take 3 Keycloak round-trips, which times out while
+            # the JVM is cold on the production VM.
+            count_resp, sessions_resp = await asyncio.gather(
+                client.get(f"{KC_ADMIN_URL}/users/count", headers=headers),
+                client.get(f"{KC_ADMIN_URL}/client-session-stats", headers=headers),
+                return_exceptions=True,
             )
+
+            total = 0
+            if isinstance(count_resp, httpx.Response) and count_resp.status_code == 200:
+                total = count_resp.json()
+
             active_sessions = 0
-            if sessions_resp.status_code == 200:
+            if isinstance(sessions_resp, httpx.Response) and sessions_resp.status_code == 200:
                 for s in sessions_resp.json():
                     # Keycloak returns "active" as a STRING (e.g. "3")
                     try:
