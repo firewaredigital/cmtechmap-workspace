@@ -247,6 +247,8 @@ services:
         --concurrency=${CELERY_CONCURRENCY:-2}
         --queues=default,processing,reports,ai_llm
         --max-tasks-per-child=50
+        --prefetch-multiplier=1
+        -O fair
         -n worker@%h
     environment:
       - APP_ENV=staging

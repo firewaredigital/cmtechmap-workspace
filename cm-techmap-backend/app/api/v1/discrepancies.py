@@ -235,6 +235,62 @@ async def get_review_queue(
 # SINGLE DISCREPANCY DETAIL
 # ══════════════════════════════════════════════════════════════════════════════
 
+# /export precisa vir ANTES de /{discrepancy_id}: registrada depois, a rota
+# dinâmica captura "export" e tenta convertê-lo em UUID (422 sempre).
+@router.get("/export")
+async def export_discrepancies(
+    project_id: UUID | None = Query(None),
+    status: str | None = Query(None),
+    export_format: str = Query("json", alias="format", description="json|csv"),
+    db: AsyncSession = Depends(get_db),
+    user: dict[str, Any] = Depends(require_gestor),
+):
+    """Export filtered discrepancies as JSON or CSV."""
+    conditions = []
+    params: dict[str, Any] = {}
+
+    if project_id:
+        conditions.append("d.project_id = :pid")
+        params["pid"] = str(project_id)
+    if status:
+        conditions.append("d.status = :status")
+        params["status"] = status
+
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+    result = await db.execute(text(f"""
+        SELECT d.cadastral_code, d.address, d.neighborhood, d.owner_name,
+               d.discrepancy_type, d.severity, d.status,
+               d.registered_area_sqm, d.detected_area_sqm,
+               d.difference_sqm, d.difference_pct,
+               d.iptu_current_brl, d.iptu_proposed_brl, d.estimated_iptu_gap_brl,
+               d.reviewed_by, d.reviewed_at, d.rejection_reason,
+               d.inspection_date, d.inspector_name, d.inspection_result
+        FROM discrepancies d
+        {where}
+        ORDER BY d.estimated_iptu_gap_brl DESC
+    """), params)
+
+    rows = [dict(r) for r in result.mappings().all()]
+    for row in rows:
+        for ts in ("reviewed_at", "inspection_date"):
+            if row.get(ts):
+                row[ts] = row[ts].isoformat()
+
+    if format == "csv":
+        if not rows:
+            return {"csv": "", "count": 0}
+        import csv
+        import io
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+        return {"csv": output.getvalue(), "count": len(rows)}
+
+    return {"data": rows, "count": len(rows)}
+
+
 @router.get("/{discrepancy_id}")
 async def get_discrepancy(
     discrepancy_id: UUID,
@@ -493,55 +549,3 @@ async def record_inspection_result(
 # EXPORT
 # ══════════════════════════════════════════════════════════════════════════════
 
-@router.get("/export")
-async def export_discrepancies(
-    project_id: UUID | None = Query(None),
-    status: str | None = Query(None),
-    export_format: str = Query("json", alias="format", description="json|csv"),
-    db: AsyncSession = Depends(get_db),
-    user: dict[str, Any] = Depends(require_gestor),
-):
-    """Export filtered discrepancies as JSON or CSV."""
-    conditions = []
-    params: dict[str, Any] = {}
-
-    if project_id:
-        conditions.append("d.project_id = :pid")
-        params["pid"] = str(project_id)
-    if status:
-        conditions.append("d.status = :status")
-        params["status"] = status
-
-    where = "WHERE " + " AND ".join(conditions) if conditions else ""
-
-    result = await db.execute(text(f"""
-        SELECT d.cadastral_code, d.address, d.neighborhood, d.owner_name,
-               d.discrepancy_type, d.severity, d.status,
-               d.registered_area_sqm, d.detected_area_sqm,
-               d.difference_sqm, d.difference_pct,
-               d.iptu_current_brl, d.iptu_proposed_brl, d.estimated_iptu_gap_brl,
-               d.reviewed_by, d.reviewed_at, d.rejection_reason,
-               d.inspection_date, d.inspector_name, d.inspection_result
-        FROM discrepancies d
-        {where}
-        ORDER BY d.estimated_iptu_gap_brl DESC
-    """), params)
-
-    rows = [dict(r) for r in result.mappings().all()]
-    for row in rows:
-        for ts in ("reviewed_at", "inspection_date"):
-            if row.get(ts):
-                row[ts] = row[ts].isoformat()
-
-    if format == "csv":
-        if not rows:
-            return {"csv": "", "count": 0}
-        import csv
-        import io
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=rows[0].keys())
-        writer.writeheader()
-        writer.writerows(rows)
-        return {"csv": output.getvalue(), "count": len(rows)}
-
-    return {"data": rows, "count": len(rows)}

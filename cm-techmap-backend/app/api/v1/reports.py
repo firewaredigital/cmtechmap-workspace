@@ -465,17 +465,12 @@ async def get_report(
     if not row:
         raise HTTPException(status_code=404, detail="Relatório não encontrado")
 
+    # A URL pré-assinada do MinIO aponta para o host INTERNO da rede Docker
+    # (minio:9000) — o navegador do usuário não resolve esse nome, em nenhum
+    # ambiente. O download passa pelo próprio backend, que é alcançável.
     download_url = None
     if row.get("file_key") and row["status"] == "completed":
-        try:
-            parts = row["file_key"].split("/", 1)
-            if len(parts) == 2:
-                client = get_minio_client()
-                download_url = client.presigned_get_object(
-                    parts[0], parts[1], expires=timedelta(hours=1),
-                )
-        except Exception:
-            pass
+        download_url = f"/api/v1/reports/{report_id}/download"
 
     return ReportRead(
         id=row["id"],
@@ -492,6 +487,65 @@ async def get_report(
         download_url=download_url,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+@router.get("/{report_id}/download")
+async def download_report(
+    report_id: uuid.UUID,
+    session: AsyncSession = Depends(get_db_session),
+    user: dict[str, Any] = Depends(require_viewer),
+):
+    """
+    Stream the generated report file through the API.
+
+    file_key convention is "bucket/objeto" (see report_tasks). Streaming via
+    the backend keeps the file behind authentication and works from any
+    browser — presigned MinIO URLs only resolve inside the Docker network.
+    """
+    from fastapi.responses import StreamingResponse
+
+    result = await session.execute(
+        text("SELECT file_key, output_format, title, status FROM reports WHERE id = :id"),
+        {"id": str(report_id)},
+    )
+    row = result.mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Relatório não encontrado")
+    if row["status"] != "completed" or not row.get("file_key"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Relatório ainda não está pronto (status: {row['status']}).",
+        )
+
+    parts = row["file_key"].split("/", 1)
+    if len(parts) != 2:
+        raise HTTPException(status_code=500, detail="file_key do relatório em formato inesperado")
+    bucket, object_name = parts
+
+    try:
+        client = get_minio_client()
+        obj = client.get_object(bucket, object_name)
+    except Exception:
+        logger.exception(f"[REPORT] Falha ao abrir {row['file_key']} no storage")
+        raise HTTPException(status_code=404, detail="Arquivo do relatório não encontrado no storage")
+
+    media = ("application/pdf" if row["output_format"] == "pdf"
+             else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    safe_title = "".join(c for c in (row["title"] or "relatorio") if c.isalnum() or c in " -_")[:80].strip() or "relatorio"
+    filename = f"{safe_title}.{row['output_format']}"
+
+    def _iter():
+        try:
+            while chunk := obj.read(1024 * 256):
+                yield chunk
+        finally:
+            obj.close()
+            obj.release_conn()
+
+    return StreamingResponse(
+        _iter(), media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

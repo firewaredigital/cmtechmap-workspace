@@ -48,7 +48,7 @@ while [[ ! -f "$STOP" ]]; do
 
         for AD in 0 1 2; do
             set_var "availability_domain_index" "$AD"
-            OUT="$(cd "$TFDIR" && "$TERRAFORM" apply -input=false -auto-approve 2>&1)"
+            OUT="$(cd "$TFDIR" && timeout 300 "$TERRAFORM" apply -input=false -auto-approve 2>&1)"
 
             if grep -q 'Apply complete' <<< "$OUT"; then
                 IP="$(cd "$TFDIR" && "$TERRAFORM" output -raw instance_public_ip 2>/dev/null)"
