@@ -51,6 +51,7 @@ dependencies = [
     # Pillow is imported directly (terrain tile re-encode, Groq vision tiling)
     "pillow>=10.0.0",
     # OpenCV powers morphological cleanup in pool detection
+    "onnxruntime>=1.17",
     "opencv-python-headless>=4.10.0",
 
     # ── Point Cloud Processing (Phase 4 — LAZ → Gaussian Splat) ──────────

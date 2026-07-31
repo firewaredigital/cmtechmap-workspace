@@ -394,13 +394,38 @@ def generate_dsm_and_buildings(
         from app.core.building_extractor import extract_building_footprints
 
         footprints_path = os.path.join(work_dir, "footprints.geojson")
-        extract_building_footprints(
-            local_ortho,
-            dsm_raw,
-            output_path=footprints_path,
-            min_height_m=2.5,
-            base_elevation=base_elevation,
-        )
+        # Detector NEURAL primeiro (segmentação treinada, ONNX/CPU); a
+        # heurística de cor+altura vira contingência explícita — ela marcava
+        # 55% dos pixels como edificação (medido) e afogava a malha fina em
+        # falsos positivos, contra 1,4% do modelo na mesma ortofoto.
+        detector_model_version = "geobase_onnx_v1"
+        if settings.ai_detector == "ml":
+            try:
+                from app.core.ml_building_detector import extract_buildings_ml
+                extract_buildings_ml(
+                    local_ortho,
+                    output_path=footprints_path,
+                    dsm_path=dsm_raw,
+                    base_elevation=base_elevation,
+                    model_path=settings.ai_model_path,
+                    model_url=settings.ai_model_url,
+                )
+            except Exception as ml_err:
+                logger.error(
+                    f"[ML] Detector neural falhou ({ml_err}) — usando heurística "
+                    "de contingência. Detecções desta rodada terão mais ruído."
+                )
+                detector_model_version = "dsm_synthetic_v1"
+                extract_building_footprints(
+                    local_ortho, dsm_raw, output_path=footprints_path,
+                    min_height_m=2.5, base_elevation=base_elevation,
+                )
+        else:
+            detector_model_version = "dsm_synthetic_v1"
+            extract_building_footprints(
+                local_ortho, dsm_raw, output_path=footprints_path,
+                min_height_m=2.5, base_elevation=base_elevation,
+            )
 
         publish_progress(task_id, "uploading", 70, "Uploading DSM and footprints to storage...")
 
@@ -492,7 +517,7 @@ def generate_dsm_and_buildings(
                     footprint_features = json_mod.load(f).get("features", [])
                 detections_written = _persist_building_detections(
                     conn, orthomosaic_asset_id, footprint_features,
-                    model_version="dsm_synthetic_v1",
+                    model_version=detector_model_version,
                 )
                 conn.commit()
                 logger.info(

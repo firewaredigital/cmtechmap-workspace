@@ -86,6 +86,15 @@ class Settings(BaseSettings):
     # That is a demo aid for dev stacks only — with the flag off (default),
     # the task fails loudly instead of fabricating results.
     allow_simulation: bool = False
+
+    # ── Detector de edificações ──────────────────────────────────────────────
+    # "ml" = rede neural ONNX (padrão); "heuristic" = cor+altura (contingência)
+    ai_detector: str = "ml"
+    ai_model_path: str = "/models/building_segmentation.onnx"
+    ai_model_url: str = (
+        "https://huggingface.co/geobase/building-footprint-segmentation"
+        "/resolve/main/onnx/model_quantized.onnx"
+    )
     nodeodm_host: str = "nodeodm"
     nodeodm_port: int = 3000
     # When NodeODM is unreachable the pipeline can fall back to a SIMULATED
