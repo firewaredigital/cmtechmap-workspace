@@ -54,6 +54,10 @@ Há uma imagem de exemplo no próprio projeto:
 `applications/teste-orto/orthophoto.tif` (23 MB, resolução de 2,31 cm/pixel,
 região de Goiás).
 
+> **Internet na primeira análise:** ao processar o primeiro voo, o sistema
+> baixa o modelo de IA (~16 MB) uma única vez. Depois disso, tudo funciona
+> sem internet.
+
 > **Um GeoTIFF comum não serve.** O arquivo precisa ter as informações
 > geográficas embutidas. Se enviar uma foto sem georreferência, o sistema
 > recusa com a mensagem *"GeoTIFF sem limites geográficos"* — é proteção, não
@@ -275,8 +279,15 @@ Com a ortofoto enviada, o sistema pode extrair o **relevo (DSM)** e os
 2. Clique em **Processar** (ou *Gerar DSM e Edificações*)
 3. Acompanhe o progresso — a barra atualiza em tempo real
 
-*Medido: 149 segundos, gerando um modelo de elevação de 195 MB e
-**129 contornos de edificações** extraídos da imagem.*
+*Medido: 149 segundos para o modelo de elevação de 195 MB, e a
+**rede neural de segmentação** (ONNX, executada em CPU) identificou
+**22 edificações** com área e confiança individuais — na primeira execução
+o sistema baixa o modelo (~16 MB) automaticamente, uma única vez.*
+
+> **É IA de verdade:** uma U-Net treinada em imagens aéreas analisa os
+> pixels — não regras de cor. Na mesma imagem, o método antigo por
+> heurística marcava 55% dos pixels como "construção"; o modelo marca 3,4%,
+> concentrado onde as estruturas realmente estão.
 
 O resultado fica disponível como camadas do projeto: o modelo de elevação
 permite a visualização 3D, e os contornos ficam salvos como arquivo
@@ -359,25 +370,23 @@ alíquotas configuradas na Etapa 1.
 
 ### Resultado medido
 
-Executado com a ortofoto de exemplo processada (129 edificações detectadas)
-e o CSV da Etapa 6 (2 lotes com geometria):
+Executado com a ortofoto de exemplo processada pela rede neural
+(22 edificações) e o CSV da Etapa 6 (2 lotes com geometria):
 
 | Indicador | Valor |
 |---|---|
-| Detecções cruzadas | 129 |
+| Detecções cruzadas (rede neural) | 22 |
 | Lotes no perímetro | 2 |
-| **Discrepâncias geradas** | **130** |
-| — Não cadastradas | 128 |
-| — Área subdeclarada | 1 |
-| — Demolidas | 1 |
-| **Gap estimado de arrecadação** | **R$ 6.887,20** |
+| **Discrepâncias geradas** | **24** |
+| — Não cadastradas | 22 |
+| — Demolidas | 2 |
+| **Gap estimado de arrecadação** | **R$ 13.306,40** |
 
-Leitura do resultado: o lote declarado com 80 m² sob uma construção de
-~267 m² caiu em *subdeclarada*; o lote com 150 m² declarados e nenhuma
-construção sobre ele caiu em *demolida*; e as 128 restantes são construções
-reais da imagem sem lote correspondente — **num cadastro de verdade, com
-milhares de lotes cobrindo a área, esse número despenca**: "não cadastrada"
-alta é sintoma de cadastro incompleto, não erro.
+Leitura do resultado: os lotes que declaram construção onde o modelo não
+vê nenhuma caíram em *demolida*, e as 22 construções detectadas sem lote
+correspondente aparecem como *não cadastradas* — **num cadastro de verdade,
+com milhares de lotes cobrindo a área, esse número despenca**: "não
+cadastrada" alta é sintoma de cadastro incompleto, não erro.
 
 > **Reprocessar:** se você reenviar a imagem ou atualizar o sistema, rode o
 > processamento do voo com a opção *force* — a análise substitui as
@@ -406,7 +415,7 @@ o **valor total estimado de arrecadação recuperável**.
 
 *Medido: aprovada a subdeclaração com o parecer "Confirmado por imagem" —
 o sistema registrou quem revisou e quando, e o painel passou a mostrar
-1 aprovada com R$ 660,80 de gap confirmado.*
+1 aprovada com o gap correspondente confirmado no painel.*
 
 ---
 
@@ -579,7 +588,7 @@ Executado numa instalação real em 27/07/2026:
 | Criação de projeto | ✅ código sequencial atribuído |
 | Envio de ortofoto (23 MB) | ✅ 201 em 20 s, resolução 2,31 cm |
 | Mapa (zoom 17–23) | ✅ quadro em 0,23 s |
-| Relevo + edificações | ✅ 149 s, DSM de 195 MB, 129 contornos |
+| Relevo + edificações | ✅ 149 s, DSM de 195 MB, **22 edificações via rede neural** |
 | Importação cadastral | ✅ 3 imóveis, 0 erros |
-| Malha fina | ✅ **130 discrepâncias, gap R$ 6.887,20** (subdeclarada e demolida plantadas → encontradas) |
+| Malha fina | ✅ **24 discrepâncias, gap R$ 13.306,40** sobre detecções neurais (demolidas plantadas → encontradas) |
 | Revisão fiscal | ✅ aprovação registrada com parecer, painel atualizado |
