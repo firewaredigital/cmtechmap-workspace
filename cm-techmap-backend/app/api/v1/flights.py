@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.database import current_tenant_schema
-from app.core.storage import get_presigned_url
 from app.dependencies import get_db, require_gestor, require_operador, require_viewer
 from app.schemas.flight import FlightAsset, FlightAssetsRead, FlightCreate, FlightProcessRequest, FlightRead
 
@@ -95,15 +94,19 @@ async def get_flight_assets(
 
     for r in assets_result.fetchall():
         asset_id, asset_type, file_key, bucket_name, file_size, res_cm = r
-        bucket = bucket_name or settings.minio_bucket_orthomosaics
-        url = get_presigned_url(bucket, file_key)
+        # URL pré-assinada do MinIO aponta para o host INTERNO da rede Docker
+        # (minio:9000) — nenhum navegador resolve. O download passa pelo
+        # backend, autenticado e alcançável de qualquer ambiente.
         assets.append(FlightAsset(
             asset_id=asset_id,
             asset_type=asset_type,
             file_key=file_key,
             file_size_bytes=file_size,
             resolution_cm=res_cm,
-            download_url=url,
+            download_url=(
+                f"/api/v1/projects/{project_id}/flights/{flight_id}"
+                f"/assets/{asset_id}/download"
+            ),
         ))
 
     # Get processing job id from upload
@@ -121,6 +124,52 @@ async def get_flight_assets(
         assets=assets,
         processing_job_id=job_row[0] if job_row else None,
     )
+
+
+@router.get("/{flight_id}/assets/{asset_id}/download")
+async def download_flight_asset(
+    project_id: uuid.UUID,
+    flight_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: dict[str, Any] = Depends(require_viewer),
+):
+    """Stream a flight asset (ortomosaico, DSM, GeoJSON) through the API."""
+    from fastapi import HTTPException
+    from fastapi.responses import StreamingResponse
+
+    result = await db.execute(text(
+        "SELECT fa.file_key, fa.bucket_name, fa.asset_type "
+        "FROM flight_assets fa JOIN flights f ON f.id = fa.flight_id "
+        "WHERE fa.id = :aid AND fa.flight_id = :fid AND f.project_id = :pid"
+    ), {"aid": str(asset_id), "fid": str(flight_id), "pid": str(project_id)})
+    row = result.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Asset não encontrado neste voo")
+
+    file_key, bucket, asset_type = row[0], row[1] or settings.minio_bucket_orthomosaics, row[2]
+    from app.core.storage import get_minio_client
+    try:
+        obj = get_minio_client().get_object(bucket, file_key)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado no storage")
+
+    ext = file_key.rsplit(".", 1)[-1].lower() if "." in file_key else "bin"
+    media = {"tif": "image/tiff", "tiff": "image/tiff",
+             "geojson": "application/geo+json", "json": "application/json",
+             "laz": "application/octet-stream", "zip": "application/zip"}.get(ext, "application/octet-stream")
+
+    def _iter():
+        try:
+            while chunk := obj.read(1024 * 512):
+                yield chunk
+        finally:
+            obj.close()
+            obj.release_conn()
+
+    return StreamingResponse(_iter(), media_type=media, headers={
+        "Content-Disposition": f'attachment; filename="{asset_type}_{asset_id}.{ext}"',
+    })
 
 
 @router.post("/{flight_id}/process", status_code=status.HTTP_202_ACCEPTED)
