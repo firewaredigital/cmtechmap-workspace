@@ -15,7 +15,12 @@ logger = logging.getLogger("cm_techmap.tenant_lifecycle")
 # ══════════════════════════════════════════════════════════════════════════════
 # SCHEMA VERSION — increment when adding new tables/columns
 # ══════════════════════════════════════════════════════════════════════════════
-SCHEMA_VERSION = 6  # Current version of tenant schema definition
+# v7: parcels ganhou o formato fiscal canônico (owner_cpf_cnpj,
+# iptu_value_current_brl, properties) e polygon passou a ser ANULÁVEL — o
+# cadastro chega antes da geometria na vida real, e a malha fina consulta
+# essas colunas: em schemas v6 a query falhava e era engolida como lista
+# vazia, fazendo a análise reportar zero para sempre.
+SCHEMA_VERSION = 7  # Current version of tenant schema definition
 
 # All tables that must exist in each tenant schema
 TENANT_TABLE_REGISTRY = [
@@ -401,21 +406,37 @@ async def _create_all_tenant_tables(session: AsyncSession, schema: str) -> list[
     created.append("ai_detections")
 
     # ── parcels ───────────────────────────────────────────────────────────
+    # Canonical fiscal shape (v7) — must stay aligned with public.parcels
+    # (migration 005): the CSV import and the malha fina run against whichever
+    # of the two the session search_path resolves.
     await session.execute(text(f"""
         CREATE TABLE IF NOT EXISTS "{schema}".parcels (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             cadastral_code VARCHAR(100) UNIQUE,
             address TEXT,
             neighborhood VARCHAR(255),
-            polygon GEOMETRY(POLYGON, 4326) NOT NULL,
+            polygon GEOMETRY(POLYGON, 4326),
             registered_area_sqm DOUBLE PRECISION,
             registered_built_area_sqm DOUBLE PRECISION,
             land_use VARCHAR(100),
             iptu_zone VARCHAR(100),
             owner_name VARCHAR(500),
+            owner_cpf_cnpj VARCHAR(30),
+            iptu_value_current_brl DOUBLE PRECISION,
+            properties JSONB DEFAULT '{{}}',
             imported_at TIMESTAMPTZ DEFAULT NOW(),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW()
         )
+    """))
+    # Converge schemas provisioned before v7 (idempotent on re-run)
+    await session.execute(text(f"""
+        ALTER TABLE "{schema}".parcels
+            ADD COLUMN IF NOT EXISTS owner_cpf_cnpj VARCHAR(30),
+            ADD COLUMN IF NOT EXISTS iptu_value_current_brl DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS properties JSONB DEFAULT '{{}}',
+            ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW(),
+            ALTER COLUMN polygon DROP NOT NULL
     """))
     created.append("parcels")
 
@@ -523,11 +544,20 @@ async def _create_all_tenant_tables(session: AsyncSession, schema: str) -> list[
             parameters JSONB DEFAULT '{{}}',
             summary JSONB DEFAULT '{{}}',
             total_discrepancies INTEGER DEFAULT 0,
+            estimated_total_gap_brl DOUBLE PRECISION DEFAULT 0,
             elapsed_seconds DOUBLE PRECISION,
             started_at TIMESTAMPTZ DEFAULT NOW(),
             completed_at TIMESTAMPTZ,
-            created_at TIMESTAMPTZ DEFAULT NOW()
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
         )
+    """))
+    # Converge schemas provisioned before v7: a malha fina grava o gap total
+    # no run — sem a coluna, a análise inteira falhava (e era engolida).
+    await session.execute(text(f"""
+        ALTER TABLE "{schema}".analysis_runs
+            ADD COLUMN IF NOT EXISTS estimated_total_gap_brl DOUBLE PRECISION DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()
     """))
     created.append("analysis_runs")
 

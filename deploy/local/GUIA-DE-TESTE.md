@@ -308,18 +308,31 @@ tenant_admin importa cadastro.**
 Colunas esperadas (nomes exatos):
 
 ```csv
-inscricao,endereco,proprietario,area_terreno,area_construida,cpf_cnpj
-01.001.0001,Rua das Flores 100,Maria Silva,360,120,123.456.789-00
-01.001.0002,Rua das Flores 120,Joao Souza,400,250,987.654.321-00
-01.001.0003,Av Central 55,Construtora ABC Ltda,800,610,12.345.678/0001-90
+inscricao,endereco,proprietario,area_terreno,area_construida,cpf_cnpj,geometry
+01.001.0001,Rua das Flores 100,Maria Silva,600,80,123.456.789-00,"POLYGON((-50.3708 -15.4394, -50.3707 -15.4394, -50.3707 -15.4390, -50.3708 -15.4390, -50.3708 -15.4394))"
+01.001.0002,Rua das Flores 120,Joao Souza,400,250,987.654.321-00,
+01.001.0003,Av Central 55,Construtora ABC Ltda,800,150,12.345.678/0001-90,"POLYGON((-50.3700 -15.4390, -50.3699 -15.4390, -50.3699 -15.4389, -50.3700 -15.4389, -50.3700 -15.4390))"
 ```
 
 - `inscricao` — inscrição cadastral (chave única do imóvel)
 - `area_terreno` / `area_construida` — em m², como número
+- **`geometry` — o contorno do lote em WKT** (coordenadas geográficas,
+  longitude/latitude). É esta coluna que permite o cruzamento espacial com as
+  construções detectadas na imagem. Pode ficar vazia — o imóvel continua
+  consultável, mas **nunca casará com uma detecção**: qualquer construção
+  sobre ele aparecerá como "não cadastrada".
+- Geometrias imperfeitas são toleradas: o sistema conserta
+  auto-interseções e, se vier um multipolígono, usa a maior parte.
 - Reimportar **atualiza** os imóveis existentes em vez de duplicar
 
-*Medido: 3 imóveis importados, 0 erros, totalizando 1.560 m² de terreno e
-980 m² de área construída.*
+A resposta informa quantos vieram com geometria:
+`{"imported": 3, "with_geometry": 2, "errors": 0}`.
+
+> **De onde tirar o WKT?** Do sistema de geoprocessamento da prefeitura
+> (exportação shapefile → WKT), ou desenhando sobre o próprio mapa do CM
+> TECHMAP com a ferramenta de medição para casos pontuais.
+
+*Medido: 3 imóveis importados, 2 com geometria, 0 erros.*
 
 ---
 
@@ -344,22 +357,31 @@ O sistema procura quatro situações:
 Para cada caso, estima a diferença de arrecadação em reais, usando as
 alíquotas configuradas na Etapa 1.
 
-> ### ⚠️ Limitação importante nesta versão
->
-> **A análise executa, mas retorna zero discrepâncias**, mesmo com imagem
-> processada e cadastro importado. Verifiquei a causa: a extração gera os 129
-> contornos de edificações e os salva como arquivo geográfico, **mas não os
-> registra na tabela que a análise fiscal consulta**. O elo entre "detectar"
-> e "cruzar com o cadastro" está incompleto.
->
-> Além disso, o cruzamento é **espacial** — depende da localização de cada
-> lote. Um CSV sem a coluna de geometria não permite o cruzamento nem que a
-> etapa anterior funcionasse.
->
-> **O que dá para testar hoje:** a tela, os filtros, a execução da análise, o
-> painel de indicadores e todo o fluxo de revisão (próxima etapa) com dados
-> inseridos manualmente. **O que ainda não produz resultado:** a geração
-> automática de discrepâncias a partir da imagem.
+### Resultado medido
+
+Executado com a ortofoto de exemplo processada (129 edificações detectadas)
+e o CSV da Etapa 6 (2 lotes com geometria):
+
+| Indicador | Valor |
+|---|---|
+| Detecções cruzadas | 129 |
+| Lotes no perímetro | 2 |
+| **Discrepâncias geradas** | **130** |
+| — Não cadastradas | 128 |
+| — Área subdeclarada | 1 |
+| — Demolidas | 1 |
+| **Gap estimado de arrecadação** | **R$ 6.887,20** |
+
+Leitura do resultado: o lote declarado com 80 m² sob uma construção de
+~267 m² caiu em *subdeclarada*; o lote com 150 m² declarados e nenhuma
+construção sobre ele caiu em *demolida*; e as 128 restantes são construções
+reais da imagem sem lote correspondente — **num cadastro de verdade, com
+milhares de lotes cobrindo a área, esse número despenca**: "não cadastrada"
+alta é sintoma de cadastro incompleto, não erro.
+
+> **Reprocessar:** se você reenviar a imagem ou atualizar o sistema, rode o
+> processamento do voo com a opção *force* — a análise substitui as
+> detecções da própria versão, sem duplicar.
 
 ---
 
@@ -381,6 +403,10 @@ Ações disponíveis (exigem **gestor** ou **tenant_admin**):
 
 O painel acompanha o total de casos, quantos foram aprovados e rejeitados, e
 o **valor total estimado de arrecadação recuperável**.
+
+*Medido: aprovada a subdeclaração com o parecer "Confirmado por imagem" —
+o sistema registrou quem revisou e quando, e o painel passou a mostrar
+1 aprovada com R$ 660,80 de gap confirmado.*
 
 ---
 
@@ -485,27 +511,23 @@ se o login falhar logo após iniciar, aguarde e tente de novo.
 
 Transparência sobre o que **não** está pronto:
 
-**1. A malha fina não gera discrepâncias automaticamente.**
-Detalhado na [Etapa 7](#etapa-7--malha-fina-do-iptu). A extração de
-edificações funciona (129 contornos gerados), mas o resultado não alimenta a
-tabela que a análise fiscal consulta.
+**1. Lotes sem a coluna `geometry` não cruzam com detecções.**
+É uma propriedade do método, não um defeito: o cruzamento é espacial. Imóveis
+importados sem geometria ficam consultáveis, mas qualquer construção sobre
+eles aparece como "não cadastrada" até a geometria ser fornecida.
 
-**2. Cadastro sem geometria não permite cruzamento espacial.**
-O CSV de exemplo tem áreas e proprietários, mas não a localização dos lotes.
-O cruzamento com as detecções é espacial e precisa dessa informação.
-
-**3. Senhas de demonstração são públicas.**
+**2. Senhas de demonstração são públicas.**
 Os nove usuários vêm com senhas conhecidas, documentadas aqui e no código.
 **Antes de usar com dados reais**, troque todas no console administrativo, em
 `/admin` no mesmo endereço (usuário `cmadmin`, senha gerada na instalação e
 gravada em `deploy/local/.env.local`).
 
-**4. O tráfego é HTTP, não HTTPS.**
+**3. O tráfego é HTTP, não HTTPS.**
 Como tudo acontece dentro da própria máquina, os dados não passam pela rede.
 Mas se você liberar o acesso para outros computadores
 (`CM_BIND_ADDRESS=0.0.0.0`), coloque um proxy com TLS na frente.
 
-**5. O DSM desta versão é sintético.**
+**4. O DSM desta versão é sintético.**
 O modelo de elevação gerado a partir de uma ortofoto pronta é estimado por
 análise de imagem, não medido por fotogrametria. Para elevação real, use o
 fluxo com as fotos brutas do drone.
@@ -559,5 +581,5 @@ Executado numa instalação real em 27/07/2026:
 | Mapa (zoom 17–23) | ✅ quadro em 0,23 s |
 | Relevo + edificações | ✅ 149 s, DSM de 195 MB, 129 contornos |
 | Importação cadastral | ✅ 3 imóveis, 0 erros |
-| Execução da malha fina | ✅ executa · ⚠️ 0 discrepâncias (ver seção 17) |
-| Painel fiscal | ✅ indicadores respondendo |
+| Malha fina | ✅ **130 discrepâncias, gap R$ 6.887,20** (subdeclarada e demolida plantadas → encontradas) |
+| Revisão fiscal | ✅ aprovação registrada com parecer, painel atualizado |

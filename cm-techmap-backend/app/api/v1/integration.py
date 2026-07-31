@@ -20,6 +20,16 @@ logger = logging.getLogger("cm_techmap.api.integration")
 router = APIRouter(prefix="/integration", tags=["Integration"])
 
 
+def _sanitize_db_error(exc: Exception) -> str:
+    """
+    First line of the DB error only — enough for the operator to fix the row
+    ("parse error - invalid geometry"), without echoing the SQL statement and
+    bind parameters that SQLAlchemy appends to str(exc).
+    """
+    first_line = str(exc).split("\n", 1)[0]
+    return first_line[:200]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # IMPORT
 # ══════════════════════════════════════════════════════════════════════════════
@@ -37,6 +47,11 @@ async def import_cadastro_csv(
     col_zona_fiscal: str = Query("zona_fiscal", description="Column for IPTU zone"),
     col_iptu_valor: str = Query("valor_iptu", description="Column for current IPTU value"),
     col_cpf_cnpj: str = Query("cpf_cnpj", description="Column for owner CPF/CNPJ"),
+    col_geometry: str = Query(
+        "geometry",
+        description="Column for parcel geometry as WKT in SRID 4326, e.g. "
+                    "POLYGON((-50.37 -15.44, ...)). Optional per row.",
+    ),
     encoding: str = Query("utf-8", description="File encoding (utf-8, latin-1, etc.)"),
     delimiter: str = Query(",", max_length=1),
     db: AsyncSession = Depends(get_db),
@@ -46,6 +61,11 @@ async def import_cadastro_csv(
     Import cadastral data from a CSV file.
     Columns are mapped via query parameters for maximum flexibility.
     Uses UPSERT — existing parcels (by cadastral_code) are updated.
+
+    Geometry matters: the IPTU malha fina cross-references parcels with AI
+    detections SPATIALLY (ST_Intersects). Parcels imported without the WKT
+    column still work for consultation, but can never match a detection —
+    every building over them shows up as "unregistered".
     """
     if not file.filename or not file.filename.lower().endswith((".csv", ".txt")):
         raise HTTPException(400, "Arquivo deve ser CSV (.csv ou .txt)")
@@ -63,7 +83,10 @@ async def import_cadastro_csv(
     # Preview: return field names if no data
     available_columns = list(reader.fieldnames)
 
+    from app.core.geometry_sql import LARGEST_POLYGON_FROM_WKT
+
     imported = 0
+    with_geometry = 0
     errors = 0
     error_details = []
 
@@ -87,46 +110,64 @@ async def import_cadastro_csv(
         except ValueError:
             iptu_valor = None
 
+        wkt = (row.get(col_geometry) or "").strip() or None
+
         try:
-            await db.execute(text("""
-                INSERT INTO parcels
-                    (cadastral_code, address, neighborhood, owner_name, owner_cpf_cnpj,
-                     registered_area_sqm, registered_built_area_sqm,
-                     land_use, iptu_zone, iptu_value_current_brl)
-                VALUES (:code, :addr, :neigh, :owner, :cpf,
-                        :area, :built, :uso, :zona, :iptu)
-                ON CONFLICT (cadastral_code) DO UPDATE SET
-                    address = COALESCE(EXCLUDED.address, parcels.address),
-                    neighborhood = COALESCE(EXCLUDED.neighborhood, parcels.neighborhood),
-                    owner_name = COALESCE(EXCLUDED.owner_name, parcels.owner_name),
-                    owner_cpf_cnpj = COALESCE(EXCLUDED.owner_cpf_cnpj, parcels.owner_cpf_cnpj),
-                    registered_area_sqm = COALESCE(EXCLUDED.registered_area_sqm, parcels.registered_area_sqm),
-                    registered_built_area_sqm = COALESCE(EXCLUDED.registered_built_area_sqm, parcels.registered_built_area_sqm),
-                    land_use = COALESCE(EXCLUDED.land_use, parcels.land_use),
-                    iptu_zone = COALESCE(EXCLUDED.iptu_zone, parcels.iptu_zone),
-                    iptu_value_current_brl = COALESCE(EXCLUDED.iptu_value_current_brl, parcels.iptu_value_current_brl),
-                    updated_at = NOW()
-            """), {
-                "code": cadastral_code,
-                "addr": (row.get(col_address) or "").strip() or None,
-                "neigh": (row.get(col_neighborhood) or "").strip() or None,
-                "owner": (row.get(col_owner) or "").strip() or None,
-                "cpf": (row.get(col_cpf_cnpj) or "").strip() or None,
-                "area": area_terreno,
-                "built": area_construida,
-                "uso": (row.get(col_uso_solo) or "").strip() or None,
-                "zona": (row.get(col_zona_fiscal) or "").strip() or None,
-                "iptu": iptu_valor,
-            })
+            # Each row runs in a SAVEPOINT: without it, one bad line (e.g.
+            # WKT inválido) poisons the whole transaction and every following
+            # row fails with "current transaction is aborted".
+            async with db.begin_nested():
+                await db.execute(text(f"""
+                    INSERT INTO parcels
+                        (cadastral_code, address, neighborhood, owner_name, owner_cpf_cnpj,
+                         registered_area_sqm, registered_built_area_sqm,
+                         land_use, iptu_zone, iptu_value_current_brl, polygon)
+                    VALUES (:code, :addr, :neigh, :owner, :cpf,
+                            :area, :built, :uso, :zona, :iptu,
+                            CASE WHEN CAST(:wkt AS text) IS NOT NULL
+                                 THEN {LARGEST_POLYGON_FROM_WKT}
+                                 ELSE NULL END)
+                    ON CONFLICT (cadastral_code) DO UPDATE SET
+                        address = COALESCE(EXCLUDED.address, parcels.address),
+                        neighborhood = COALESCE(EXCLUDED.neighborhood, parcels.neighborhood),
+                        owner_name = COALESCE(EXCLUDED.owner_name, parcels.owner_name),
+                        owner_cpf_cnpj = COALESCE(EXCLUDED.owner_cpf_cnpj, parcels.owner_cpf_cnpj),
+                        registered_area_sqm = COALESCE(EXCLUDED.registered_area_sqm, parcels.registered_area_sqm),
+                        registered_built_area_sqm = COALESCE(EXCLUDED.registered_built_area_sqm, parcels.registered_built_area_sqm),
+                        land_use = COALESCE(EXCLUDED.land_use, parcels.land_use),
+                        iptu_zone = COALESCE(EXCLUDED.iptu_zone, parcels.iptu_zone),
+                        iptu_value_current_brl = COALESCE(EXCLUDED.iptu_value_current_brl, parcels.iptu_value_current_brl),
+                        polygon = COALESCE(EXCLUDED.polygon, parcels.polygon),
+                        updated_at = NOW()
+                """), {
+                    "code": cadastral_code,
+                    "addr": (row.get(col_address) or "").strip() or None,
+                    "neigh": (row.get(col_neighborhood) or "").strip() or None,
+                    "owner": (row.get(col_owner) or "").strip() or None,
+                    "cpf": (row.get(col_cpf_cnpj) or "").strip() or None,
+                    "area": area_terreno,
+                    "built": area_construida,
+                    "uso": (row.get(col_uso_solo) or "").strip() or None,
+                    "zona": (row.get(col_zona_fiscal) or "").strip() or None,
+                    "iptu": iptu_valor,
+                    "wkt": wkt,
+                })
             imported += 1
+            if wkt:
+                with_geometry += 1
         except Exception as e:
             errors += 1
-            error_details.append({"line": i, "code": cadastral_code, "error": str(e)[:200]})
+            error_details.append({
+                "line": i,
+                "code": cadastral_code,
+                "error": _sanitize_db_error(e),
+            })
 
     await db.commit()
 
     return {
         "imported": imported,
+        "with_geometry": with_geometry,
         "errors": errors,
         "total_lines": imported + errors,
         "available_columns": available_columns,

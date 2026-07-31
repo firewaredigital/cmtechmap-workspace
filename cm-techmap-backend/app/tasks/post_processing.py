@@ -20,6 +20,109 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def _features_to_detection_rows(features: list[dict]) -> tuple[list[dict], int]:
+    """
+    Convert extractor GeoJSON features into ai_detections INSERT parameters.
+
+    The extractor emits `height`/`max_height`/`area_m2`; the fiscal analysis
+    reads the `area_sqm` COLUMN and `properties->>'height_m'`. This mapping is
+    the contract between the two — without it the malha fina sees nothing.
+
+    Returns (rows, skipped_count). Non-polygon geometries are skipped, not
+    fatal: one bad footprint must not discard the other hundred.
+    """
+    rows: list[dict] = []
+    skipped = 0
+    for feature in features:
+        geometry = feature.get("geometry") or {}
+        if geometry.get("type") not in ("Polygon", "MultiPolygon"):
+            skipped += 1
+            continue
+        props = dict(feature.get("properties") or {})
+
+        height_m = props.get("height_m", props.get("height"))
+        area_sqm = props.get("area_sqm", props.get("area_m2"))
+        # Normalize the keys downstream consumers read from `properties`
+        if height_m is not None:
+            props["height_m"] = height_m
+        if area_sqm is not None:
+            props["area_sqm"] = area_sqm
+
+        rows.append({
+            "geom": json.dumps(geometry),
+            "conf": float(props.get("confidence", 0.75)),
+            "area": float(area_sqm or 0.0),
+            "perim": float(props.get("perimeter_m", 0.0) or 0.0),
+            "height": float(height_m) if height_m is not None else None,
+            "props": json.dumps(props),
+        })
+    return rows, skipped
+
+
+def _persist_building_detections(
+    conn,
+    orthomosaic_asset_id: str,
+    features: list[dict],
+    model_version: str,
+) -> int:
+    """
+    Write extracted footprints into ai_detections — the table the IPTU malha
+    fina joins against (ai_detections → flight_assets → flights → project).
+
+    Historically the pipeline only uploaded footprints.geojson to MinIO and the
+    fiscal analysis always saw zero detections. The GeoJSON upload remains (it
+    feeds the 3D viewer); THIS is what feeds the analysis.
+
+    Idempotent per (asset, model_version): re-running the pipeline replaces its
+    own previous detections without touching results from other models (e.g.
+    the Groq pipeline writes the same class with a different model_version).
+
+    The caller must have applied the tenant search_path to `conn`.
+    """
+    from sqlalchemy import text as sa_text
+
+    rows, skipped = _features_to_detection_rows(features)
+    if skipped:
+        logger.warning(f"[DETECTIONS] {skipped} feature(s) sem polígono — ignoradas")
+    if not rows:
+        return 0
+
+    conn.execute(sa_text(
+        "DELETE FROM ai_detections "
+        "WHERE flight_asset_id = CAST(:aid AS uuid) "
+        "AND detection_class = 'building' AND model_version = :model"
+    ), {"aid": orthomosaic_asset_id, "model": model_version})
+
+    from app.core.geometry_sql import LARGEST_POLYGON_FROM_GEOJSON
+
+    written = 0
+    failed = 0
+    for row in rows:
+        try:
+            # SAVEPOINT por linha: sem ele, a PRIMEIRA falha envenena a
+            # transação e todas as detecções seguintes morrem com
+            # "current transaction is aborted".
+            with conn.begin_nested():
+                conn.execute(sa_text(f"""
+                    INSERT INTO ai_detections
+                        (flight_asset_id, detection_class, polygon, confidence,
+                         area_sqm, perimeter_m, height_m, properties, model_version)
+                    VALUES
+                        (CAST(:aid AS uuid), 'building',
+                         {LARGEST_POLYGON_FROM_GEOJSON},
+                         :conf, :area, :perim, :height,
+                         CAST(:props AS jsonb), :model)
+                """), {**row, "aid": orthomosaic_asset_id, "model": model_version})
+            written += 1
+        except Exception as e:
+            failed += 1
+            if failed <= 3:
+                logger.warning(f"[DETECTIONS] Falha ao gravar detecção: {str(e).splitlines()[0][:160]}")
+    if failed:
+        logger.warning(f"[DETECTIONS] {failed} detecção(ões) não gravadas de {len(rows)}")
+    return written
+
+
 @shared_task(
     name="app.tasks.post_processing.convert_orthomosaic_to_cog",
     bind=True,
@@ -379,6 +482,23 @@ def generate_dsm_and_buildings(
                 conn.commit()
                 logger.info("[DSM-PIPELINE] Inserted DSM flight_asset record")
 
+            # ── Step 7: Persist detections for the fiscal analysis ────────
+            # Without this the malha fina always reports zero: it reads the
+            # ai_detections table, not the GeoJSON in object storage.
+            detections_written = 0
+            with engine.connect() as conn:
+                _apply_tenant_search_path(conn, tenant_schema)
+                with open(footprints_path, encoding="utf-8") as f:
+                    footprint_features = json_mod.load(f).get("features", [])
+                detections_written = _persist_building_detections(
+                    conn, orthomosaic_asset_id, footprint_features,
+                    model_version="dsm_synthetic_v1",
+                )
+                conn.commit()
+                logger.info(
+                    f"[DSM-PIPELINE] {detections_written} detecções gravadas em ai_detections"
+                )
+
             # Update flight status to 'completed' after successful processing
             with engine.connect() as conn:
                 _apply_tenant_search_path(conn, tenant_schema)
@@ -396,8 +516,10 @@ def generate_dsm_and_buildings(
             engine.dispose()
 
         publish_progress(task_id, "completed", 100,
-                         "DSM + building footprints generated ✓",
-                         extra={"dsm_key": dsm_object_key, "buildings_key": bld_object_key})
+                         f"DSM + {detections_written} edificações detectadas ✓",
+                         extra={"dsm_key": dsm_object_key,
+                                "buildings_key": bld_object_key,
+                                "detections_written": detections_written})
 
         return {
             "status": "completed",
@@ -405,6 +527,7 @@ def generate_dsm_and_buildings(
             "buildings_key": bld_object_key,
             "dsm_metadata": dsm_meta,
             "dsm_source": "synthetic",
+            "detections_written": detections_written,
         }
 
     except Exception as exc:
@@ -522,6 +645,7 @@ def extract_buildings_from_real_dsm(
         from sqlalchemy import create_engine
         from sqlalchemy import text as sa_text
 
+        detections_written = 0
         engine = create_engine(settings.database_url_sync)
         try:
             with engine.connect() as conn:
@@ -537,6 +661,31 @@ def extract_buildings_from_real_dsm(
                     "jsonb_set(COALESCE(metadata_json, '{}'::jsonb), '{dsm_source}', '\"real\"'::jsonb) "
                     "WHERE flight_id = CAST(:fid AS uuid) AND asset_type = 'dsm'"
                 ), {"fid": flight_id})
+
+                # Persist detections for the fiscal analysis. The footprints
+                # hang off the flight's ORTHOMOSAIC asset — the malha fina
+                # resolves the project through flight_assets → flights.
+                ortho_row = conn.execute(sa_text(
+                    "SELECT id FROM flight_assets "
+                    "WHERE flight_id = CAST(:fid AS uuid) AND asset_type = 'orthomosaic' "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ), {"fid": flight_id}).fetchone() if flight_id else None
+                if ortho_row:
+                    import json as json_mod2
+                    with open(footprints_path, encoding="utf-8") as f:
+                        footprint_features = json_mod2.load(f).get("features", [])
+                    detections_written = _persist_building_detections(
+                        conn, str(ortho_row[0]), footprint_features,
+                        model_version="dsm_real_v1",
+                    )
+                    logger.info(
+                        f"[REAL-DSM-BUILDINGS] {detections_written} detecções gravadas"
+                    )
+                else:
+                    logger.warning(
+                        "[REAL-DSM-BUILDINGS] Voo sem ortomosaico registrado — "
+                        "detecções não persistidas (análise fiscal não as verá)"
+                    )
                 conn.commit()
         except Exception as e:
             logger.warning(f"[REAL-DSM-BUILDINGS] DB update failed: {e}")
@@ -544,13 +693,16 @@ def extract_buildings_from_real_dsm(
             engine.dispose()
 
         publish_progress(task_id, "completed", 100,
-                         "Building footprints extracted from real DSM ✓",
-                         extra={"buildings_key": bld_object_key, "dsm_source": dsm_source})
+                         f"{detections_written} edificações extraídas do DSM real ✓",
+                         extra={"buildings_key": bld_object_key,
+                                "dsm_source": dsm_source,
+                                "detections_written": detections_written})
 
         return {
             "status": "completed",
             "buildings_key": bld_object_key,
             "dsm_source": dsm_source,
+            "detections_written": detections_written,
         }
 
     except Exception as exc:

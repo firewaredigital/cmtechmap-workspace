@@ -128,6 +128,7 @@ async def trigger_flight_processing(
     project_id: uuid.UUID,
     flight_id: uuid.UUID,
     body: FlightProcessRequest | None = None,
+    force: bool = False,
     db: AsyncSession = Depends(get_db),
     user: dict[str, Any] = Depends(require_gestor),
 ):
@@ -140,6 +141,10 @@ async def trigger_flight_processing(
     2. If no orthomosaics exist but there are raw uploads in the uploads table,
        trigger the full photogrammetry pipeline (ODM).
     3. Otherwise, return a clear error with instructions.
+
+    `force=true` reprocessa mesmo com DSM já gerado — necessário para
+    regenerar as detecções após atualização do extrator (o pipeline substitui
+    as detecções da própria versão de modelo, sem duplicar).
     """
     # Validate flight exists
     flight_result = await db.execute(text(
@@ -177,16 +182,25 @@ async def trigger_flight_processing(
         ), {"fid": str(flight_id)})
         existing_dsm = dsm_check.fetchone()
 
-        if existing_dsm:
+        if existing_dsm and not force:
             # DSM already exists — no need to reprocess
             return {
-                "message": "DSM já gerado para este voo. Reprocessamento não necessário.",
+                "message": "DSM já gerado para este voo. Use force=true para reprocessar.",
                 "celery_task_id": None,
                 "flight_id": str(flight_id),
                 "pipeline": "dsm_buildings",
                 "status": "already_completed",
                 "dsm_asset_id": str(existing_dsm[0]),
             }
+
+        if existing_dsm and force:
+            # Reprocessing replaces the previous DSM record — keeping both
+            # would make the terrain endpoint resolve an arbitrary one.
+            await db.execute(text(
+                "UPDATE flight_assets SET is_active = false "
+                "WHERE flight_id = :fid AND asset_type = 'dsm'"
+            ), {"fid": str(flight_id)})
+            await db.commit()
 
         # Trigger DSM + Building extraction on existing orthomosaic
         job = celery_app.send_task(
