@@ -348,6 +348,20 @@ class NodeODMClient:
                         async for chunk in resp.aiter_bytes(chunk_size=131072):
                             f.write(chunk)
 
+                # NodeODM responde HTTP 200 com {"error": ...} no corpo para
+                # assets que não existem — sem esta checagem, o JSON era salvo
+                # como .tif e estourava só na conversão COG, DEPOIS de a tarefa
+                # de origem já ter sido destruída.
+                with open(local_path, "rb") as check:
+                    head = check.read(64)
+                if head.lstrip()[:1] == b"{" and b"error" in head:
+                    logger.warning(
+                        f"[ODM] {asset_name} indisponível (erro em corpo 200): "
+                        f"{head[:60]!r}"
+                    )
+                    local_path.unlink(missing_ok=True)
+                    continue
+
                 file_size = local_path.stat().st_size
                 downloaded[asset_name] = local_path
                 logger.info(
@@ -356,6 +370,54 @@ class NodeODMClient:
                 )
             except Exception as e:
                 logger.warning(f"[ODM] Failed to download {asset_name}: {e}")
+
+        # Fallback: sem orthophoto individual, baixar o all.zip (único
+        # endpoint garantido em todas as versões do NodeODM) e extrair os
+        # artefatos do layout padrão do ODM.
+        if "orthophoto.tif" not in downloaded:
+            logger.info("[ODM] orthophoto.tif indisponível — baixando all.zip")
+            allzip = dest_dir / "all.zip"
+            try:
+                async with httpx.AsyncClient(timeout=3600) as client, client.stream(
+                    "GET", f"{self.base_url}/task/{task_uuid}/download/all.zip"
+                ) as resp:
+                    resp.raise_for_status()
+                    with open(allzip, "wb") as f:
+                        async for chunk in resp.aiter_bytes(chunk_size=1 << 20):
+                            f.write(chunk)
+                with open(allzip, "rb") as check:
+                    if check.read(2) != b"PK":
+                        raise RuntimeError("all.zip também veio como erro-JSON")
+
+                import zipfile
+
+                member_map = {
+                    "odm_orthophoto/odm_orthophoto.tif": ("orthophoto.tif", "orthophoto.tif"),
+                    "odm_dem/dsm.tif": ("dsm.tif", "dsm.tif"),
+                    "odm_dem/dtm.tif": ("dtm.tif", "dtm.tif"),
+                    "odm_georeferencing/odm_georeferenced_model.laz": (
+                        "georeferenced_model.laz", "pointcloud.laz",
+                    ),
+                }
+                with zipfile.ZipFile(allzip) as zf:
+                    names = set(zf.namelist())
+                    for member, (asset_key, local_name) in member_map.items():
+                        if member not in names:
+                            continue
+                        target = dest_dir / local_name
+                        with zf.open(member) as src, open(target, "wb") as dst:
+                            while True:
+                                block = src.read(1 << 20)
+                                if not block:
+                                    break
+                                dst.write(block)
+                        downloaded[asset_key] = target
+                        logger.info(
+                            f"[ODM] Extraído do all.zip: {member} → {local_name} "
+                            f"({target.stat().st_size / 1024 / 1024:.1f} MB)"
+                        )
+            finally:
+                allzip.unlink(missing_ok=True)
 
         logger.info(
             f"[ODM] Bulk download complete: {len(downloaded)}/{len(available)} assets"

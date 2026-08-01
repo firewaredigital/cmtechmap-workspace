@@ -53,6 +53,15 @@ celery_app.conf.update(
     # Retry policy
     task_acks_late=True,
     task_reject_on_worker_lost=True,
+
+    # Com acks_late + broker Redis, uma tarefa só é confirmada ao TERMINAR.
+    # Se ela rodar mais que o visibility_timeout (padrão 1h), o Redis
+    # re-entrega a mesma mensagem a outro slot do worker — a fotogrametria
+    # de ~2h era re-despachada em loop, criando um processamento NodeODM
+    # duplicado a cada ciclo até encher o disco. O timeout precisa exceder
+    # a tarefa mais longa permitida (time_limit=14400 do drone upload).
+    broker_transport_options={"visibility_timeout": 21600},  # 6h
+    result_backend_transport_options={"visibility_timeout": 21600},
 )
 
 # Explicitly register all task modules so Celery discovers them reliably

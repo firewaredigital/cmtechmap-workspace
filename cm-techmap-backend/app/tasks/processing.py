@@ -153,6 +153,7 @@ def process_drone_upload(
 
         from app.core.odm_client import NodeODMClient
         odm = NodeODMClient()
+        odm_uuid = None
 
         # Check if NodeODM is available
         odm_healthy = _run_async(odm.is_healthy())
@@ -234,8 +235,19 @@ def process_drone_upload(
                 f"Downloaded {len(assets_downloaded)} assets: {list(assets_downloaded.keys())}",
             )
 
-            # Clean up ODM task
-            _run_async(odm.remove_task(odm_uuid))
+            # A tarefa ODM NÃO é removida aqui: remover antes de validar o
+            # download destruiu 960 MB de resultado real quando o NodeODM
+            # devolveu JSONs de erro com nome de .tif. Validar o essencial
+            # agora; a remoção só acontece após a publicação completa.
+            _ortho = downloaded_paths.get("orthophoto.tif")
+            if _ortho is not None:
+                with open(_ortho, "rb") as _f:
+                    _magic = _f.read(4)
+                if _magic[:2] not in (b"II", b"MM"):
+                    raise RuntimeError(
+                        f"orthophoto.tif baixado é inválido (inicia com {_magic!r}) "
+                        "— abortando sem remover a tarefa NodeODM de origem."
+                    )
 
         else:
             if not get_settings().allow_simulation:
@@ -627,6 +639,16 @@ def process_drone_upload(
                          })
 
         logger.info(f"[PIPELINE] Upload {upload_id} processing COMPLETE (dsm_source={dsm_source})")
+
+        # Só agora, com tudo convertido e publicado, a tarefa NodeODM de
+        # origem pode ser removida (falha aqui é não-crítica: sobra espaço
+        # ocupado, nunca dado perdido).
+        if odm_uuid:
+            try:
+                _run_async(odm.remove_task(odm_uuid))
+                logger.info(f"[PIPELINE] NodeODM task {odm_uuid} removida após publicação")
+            except Exception as e:
+                logger.warning(f"[PIPELINE] Falha ao remover tarefa NodeODM (não-crítico): {e}")
 
         # ── AUTO-TRIGGER: AI Pipeline ─────────────────────────────────
         ortho_info = processed_assets.get("orthomosaic")
