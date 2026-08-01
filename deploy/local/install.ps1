@@ -36,7 +36,13 @@ $HostsMarker = "# CM TECHMAP (instalacao local)"
 function Write-Step { param($m) Write-Host ""; Write-Host "> $m" -ForegroundColor White -BackgroundColor DarkBlue }
 function Write-Ok   { param($m) Write-Host "  [ok] $m" -ForegroundColor Green }
 function Write-Warn { param($m) Write-Host "  [!]  $m" -ForegroundColor Yellow }
-function Stop-Fail  { param($m) Write-Host "  [X]  $m" -ForegroundColor Red; exit 1 }
+function Stop-Fail  { param($m)
+    Write-Host "  [X]  $m" -ForegroundColor Red
+    # O instalador grafico le este arquivo para mostrar o motivo REAL da
+    # falha, em vez de uma lista generica de causas.
+    try { [IO.File]::WriteAllText((Join-Path $Here ".install-error"), $m) } catch {}
+    exit 1
+}
 function Ask {
     param($q)
     if ($Yes -or $Silent) { return $true }
@@ -45,7 +51,8 @@ function Ask {
 }
 
 # ==============================================================================
-Write-Step "1/7 Verificando pre-requisitos"
+Remove-Item (Join-Path $Here ".install-error") -ErrorAction SilentlyContinue
+Write-Step "1/8 Verificando pre-requisitos"
 
 $isAdmin = ([Security.Principal.WindowsPrincipal] `
     [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -80,7 +87,62 @@ if ($freeGB -lt 20) { Stop-Fail "Disco livre: $freeGB GB. Sao necessarios ao men
 Write-Ok "Disco livre: $freeGB GB"
 
 # ==============================================================================
-Write-Step "2/7 Preparando configuracao"
+Write-Step "2/8 Verificando instalacao anterior"
+
+# Uma maquina que ja rodou o CM TECHMAP tem containers/volumes cml-*. Sem
+# este passo, a guarda de seguranca via abortar a instalacao ("dados de uma
+# instalacao anterior") sempre que o .env.local antigo morasse em OUTRA
+# pasta - exatamente o caso de atualizar via instalador novo.
+$prevContainers = @(docker ps -a --filter "name=cml-" --format "{{.Names}}" 2>$null | Where-Object { $_ })
+$prevVolumes    = @(docker volume ls -q --filter "name=cml-" 2>$null | Where-Object { $_ })
+
+if ($prevContainers.Count -gt 0 -or $prevVolumes.Count -gt 0) {
+    Write-Ok "Instalacao anterior detectada ($($prevContainers.Count) container(s), $($prevVolumes.Count) volume(s) de dados)"
+
+    # Migrar os segredos: as senhas gravadas nos volumes so abrem com o
+    # .env.local ORIGINAL. Procuramos no registro do instalador anterior e,
+    # se preciso, na etiqueta do compose dos proprios containers (cobre
+    # instalacoes feitas via zip em qualquer pasta).
+    if (-not (Test-Path $EnvFile)) {
+        $oldEnv = $null
+        try {
+            $reg = Get-ItemProperty -Path "HKLM:\Software\CmTechMapLocal" -Name "InstallDir" -ErrorAction Stop
+            $candidate = Join-Path $reg.InstallDir "applications\deploy\local\.env.local"
+            if (Test-Path $candidate) { $oldEnv = $candidate }
+        } catch { }
+        if (-not $oldEnv -and $prevContainers.Count -gt 0) {
+            $wd = docker inspect $prevContainers[0] --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' 2>$null
+            if ($wd) {
+                $candidate = Join-Path $wd ".env.local"
+                if (Test-Path $candidate) { $oldEnv = $candidate }
+            }
+        }
+        if ($oldEnv) {
+            Copy-Item $oldEnv $EnvFile -Force
+            Write-Ok "Segredos migrados de: $oldEnv (dados preservados)"
+        } elseif ($prevVolumes.Count -gt 0) {
+            Stop-Fail ("Ha dados de uma instalacao anterior, mas o arquivo de segredos (.env.local) nao foi encontrado em nenhum local conhecido. " +
+                "Sem ele, as senhas dos volumes nao podem ser abertas. " +
+                "Copie o .env.local da instalacao antiga para '$Here' e rode novamente - ou, para descartar os dados antigos: docker volume rm " + ($prevVolumes -join " "))
+        }
+    } else {
+        Write-Ok "Segredos ja presentes em $EnvFile"
+    }
+
+    # Parar a versao em execucao: liberta as portas e garante que a nova
+    # versao suba limpa. Processamentos em andamento sao interrompidos.
+    $running = @(docker ps --filter "name=cml-" --format "{{.Names}}" 2>$null | Where-Object { $_ })
+    if ($running.Count -gt 0) {
+        Write-Warn "Parando a versao em execucao ($($running.Count) servico(s))..."
+        docker stop -t 30 @running | Out-Null
+        Write-Ok "Versao anterior parada - sera substituida pela nova"
+    }
+} else {
+    Write-Ok "Nenhuma instalacao anterior encontrada - instalacao limpa"
+}
+
+# ==============================================================================
+Write-Step "3/8 Preparando configuracao"
 
 function New-Secret {
     $bytes = New-Object byte[] 24
@@ -91,23 +153,6 @@ function New-Secret {
 if (Test-Path $EnvFile) {
     Write-Ok "Reaproveitando .env.local (segredos preservados)"
 } else {
-    # Volumes de uma instalacao anterior guardam as senhas ANTIGAS: o
-    # POSTGRES_PASSWORD so vale na primeira inicializacao do banco. Gerar
-    # segredos novos sobre dados antigos deixa Postgres/Keycloak/Martin em
-    # loop de "password authentication failed" - falhar aqui e mais honesto.
-    $stale = (docker volume ls -q --filter "name=^cml-" 2>$null) -join " "
-    if ($stale.Trim() -ne "") {
-        Write-Host "  Encontrei dados de uma instalacao anterior: $stale" -ForegroundColor Yellow
-        Write-Host "  Mas o arquivo de segredos (.env.local) nao existe mais, e as senhas"
-        Write-Host "  gravadas nesses volumes nao podem ser recuperadas."
-        Write-Host ""
-        Write-Host "  Opcoes:"
-        Write-Host "    - recuperar o .env.local antigo (backup?) e rodar de novo"
-        Write-Host "    - apagar os dados e instalar do zero:"
-        Write-Host "        docker volume rm $stale"
-        Write-Host "        .\install.ps1"
-        Stop-Fail "Instalacao interrompida para nao corromper dados existentes."
-    }
     if (-not (Test-Path $EnvExample)) { Stop-Fail "Modelo nao encontrado: $EnvExample" }
     # Preserva UTF-8 sem BOM: o Docker Compose nao interpreta BOM em .env
     $lines = Get-Content $EnvExample
@@ -143,7 +188,7 @@ if ($Domain -match '\.(dev|app)$') {
 Write-Ok "Dominio: $Domain"
 
 # ==============================================================================
-Write-Step "3/7 Definindo a porta HTTP"
+Write-Step "4/8 Definindo a porta HTTP"
 
 function Test-PortBusy { param($p)
     $c = Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue
@@ -202,7 +247,7 @@ if ($PortValue -eq 80) {
 Write-Ok "Endereco de acesso: $BaseUrl"
 
 # ==============================================================================
-Write-Step "4/7 Registrando o dominio no sistema"
+Write-Step "5/8 Registrando o dominio no sistema"
 
 $hostsContent = Get-Content $HostsFile -ErrorAction SilentlyContinue
 if ($hostsContent -match "^\s*[^#].*\s$([regex]::Escape($Domain))\s*$") {
@@ -223,7 +268,7 @@ if ($resolved -ne "127.0.0.1") {
 Write-Ok "Resolucao verificada: $Domain -> 127.0.0.1"
 
 # ==============================================================================
-Write-Step "5/7 Compilando e subindo os servicos (demora alguns minutos)"
+Write-Step "6/8 Compilando e subindo os servicos (demora alguns minutos)"
 
 Push-Location $Here
 try {
@@ -238,7 +283,7 @@ try {
     Write-Ok "Servicos iniciados"
 
     # ==========================================================================
-    Write-Step "6/7 Aguardando o banco e aplicando migracoes"
+    Write-Step "7/8 Aguardando o banco e aplicando migracoes"
 
     $ready = $false
     for ($i = 1; $i -le 60; $i++) {
@@ -256,7 +301,7 @@ try {
 finally { Pop-Location }
 
 # ==============================================================================
-Write-Step "7/7 Validando a instalacao"
+Write-Step "8/8 Validando a instalacao"
 
 $realm = Get-EnvValue "KEYCLOAK_REALM"
 if ($realm -eq "") { $realm = "cm-techmap" }

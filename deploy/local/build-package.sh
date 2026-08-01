@@ -111,6 +111,14 @@ Se a porta 80 estiver ocupada por outro programa, o instalador escolhe
 outra automaticamente e informa o endereço final — nada é desligado.
 
 
+ATUALIZANDO UMA VERSAO JA INSTALADA
+-----------------------------------
+Rode o novo instalador normalmente, por cima. Ele detecta a instalacao
+anterior, PARA a versao em execucao e sobe a nova versao PRESERVANDO
+todos os dados (projetos, imagens, banco). Processamentos que estiverem
+rodando naquele momento sao interrompidos.
+
+
 DEPOIS DE INSTALAR
 ------------------
 Windows:  .\\cmtechmap.ps1 {start|stop|status|logs|backup|update|uninstall}

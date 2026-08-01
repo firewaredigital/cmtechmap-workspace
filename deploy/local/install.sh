@@ -49,7 +49,7 @@ fi
 step()  { echo; echo "${BOLD}▸ $*${RESET}"; }
 ok()    { echo "  ${GREEN}✓${RESET} $*"; }
 warn()  { echo "  ${YELLOW}!${RESET} $*"; }
-die()   { echo "  ${RED}✗ $*${RESET}" >&2; exit 1; }
+die()   { echo "  ${RED}✗ $*${RESET}" >&2; echo "$*" > "$HERE/.install-error" 2>/dev/null || true; exit 1; }
 ask() { # ask <pergunta> ; retorna 0 para sim
     [[ $ASSUME_YES -eq 1 ]] && return 0
     local r; read -r -p "  $1 [s/N] " r </dev/tty || return 1
@@ -57,7 +57,8 @@ ask() { # ask <pergunta> ; retorna 0 para sim
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "1/7 Verificando pré-requisitos"
+rm -f "$HERE/.install-error"
+step "1/8 Verificando pré-requisitos"
 
 [[ $EUID -eq 0 ]] || die "Rode com sudo: precisa editar $HOSTS_FILE e usar a porta 80."
 
@@ -86,7 +87,44 @@ FREE_DISK_GB=$(df -BG --output=avail "$HERE" | tail -1 | tr -dc '0-9')
 ok "Disco livre: ${FREE_DISK_GB} GB"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "2/7 Preparando configuração"
+step "2/8 Verificando instalação anterior"
+
+# Máquinas que já rodaram o CM TECHMAP têm containers/volumes cml-*. Este
+# passo transforma a reinstalação em ATUALIZAÇÃO: migra os segredos da
+# instalação antiga (se estiverem em outra pasta) e para a versão em
+# execução antes de subir a nova — preservando os dados dos volumes.
+PREV_CONTAINERS="$(docker ps -a --filter 'name=cml-' --format '{{.Names}}' 2>/dev/null | tr '\n' ' ')"
+PREV_VOLUMES="$(docker volume ls -q --filter 'name=^cml-' 2>/dev/null | tr '\n' ' ')"
+
+if [[ -n "${PREV_CONTAINERS// }" || -n "${PREV_VOLUMES// }" ]]; then
+    ok "Instalação anterior detectada (containers: ${PREV_CONTAINERS:-nenhum}| volumes: ${PREV_VOLUMES:-nenhum})"
+
+    # Migrar segredos: as senhas dos volumes só abrem com o .env.local
+    # ORIGINAL. A etiqueta do compose nos containers antigos aponta a pasta
+    # de onde eles subiram — é lá que o arquivo mora.
+    if [[ ! -f "$ENV_FILE" && -n "${PREV_CONTAINERS// }" ]]; then
+        FIRST_PREV="$(echo "$PREV_CONTAINERS" | awk '{print $1}')"
+        OLD_WD="$(docker inspect "$FIRST_PREV" --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' 2>/dev/null || true)"
+        if [[ -n "$OLD_WD" && -f "$OLD_WD/.env.local" && "$OLD_WD" != "$HERE" ]]; then
+            cp "$OLD_WD/.env.local" "$ENV_FILE"
+            ok "Segredos migrados de: $OLD_WD/.env.local (dados preservados)"
+        fi
+    fi
+
+    # Parar a versão em execução (liberta as portas; a nova sobe limpa)
+    RUNNING="$(docker ps --filter 'name=cml-' --format '{{.Names}}' 2>/dev/null | tr '\n' ' ')"
+    if [[ -n "${RUNNING// }" ]]; then
+        warn "Parando a versão em execução (${RUNNING}) — processamentos em andamento serão interrompidos"
+        # shellcheck disable=SC2086
+        docker stop -t 30 $RUNNING >/dev/null
+        ok "Versão anterior parada — será substituída pela nova"
+    fi
+else
+    ok "Nenhuma instalação anterior — instalação limpa"
+fi
+
+# ==============================================================================
+step "3/8 Preparando configuração"
 
 gen_secret() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32; }
 
@@ -142,7 +180,7 @@ esac
 ok "Domínio: $DOMAIN"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "3/7 Escolhendo a porta HTTP"
+step "4/8 Escolhendo a porta HTTP"
 
 # Seleção DINÂMICA: nunca para serviços de terceiros para tomar a porta.
 # Se a preferida estiver ocupada (Apache, IIS, outro projeto), procura a
@@ -196,7 +234,7 @@ fi
 ok "Endereço de acesso: $BASE_URL"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "4/7 Registrando o domínio no sistema"
+step "5/8 Registrando o domínio no sistema"
 
 if grep -qE "^[^#]*[[:space:]]$DOMAIN([[:space:]]|$)" "$HOSTS_FILE"; then
     ok "$DOMAIN já consta em $HOSTS_FILE"
@@ -218,7 +256,7 @@ fi
 ok "Resolução verificada: $DOMAIN → 127.0.0.1"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "5/7 Compilando e subindo os serviços (demora alguns minutos)"
+step "6/8 Compilando e subindo os serviços (demora alguns minutos)"
 
 cd "$HERE"
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --quiet \
@@ -232,7 +270,7 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans 
 ok "Serviços iniciados"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "6/7 Aguardando o banco e aplicando migrações"
+step "7/8 Aguardando o banco e aplicando migrações"
 
 for i in $(seq 1 60); do
     if docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
@@ -249,7 +287,7 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
 ok "Banco migrado"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "7/7 Validando a instalação"
+step "8/8 Validando a instalação"
 
 FAILURES=0
 check() { # check <descrição> <url> <código esperado>

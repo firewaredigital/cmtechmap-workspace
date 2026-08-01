@@ -115,6 +115,18 @@ Function .onInit
             "O Docker Desktop está instalado, mas não está em execução.$\r$\n$\r$\nAbra o Docker Desktop, aguarde o ícone ficar verde (Running) e execute este instalador novamente."
         Abort
     ${EndIf}
+
+    ; Instalação anterior feita por este instalador? O NSIS já aponta
+    ; $INSTDIR para a mesma pasta (InstallDirRegKey). Avisar que é uma
+    ; ATUALIZAÇÃO: a versão em execução será parada e os dados preservados
+    ; (a migração/parada em si acontece no install.ps1, passo 2/8).
+    ReadRegStr $0 HKLM "Software\${APP_KEY}" "InstallDir"
+    StrCmp $0 "" fim_deteccao
+        MessageBox MB_ICONINFORMATION|MB_OKCANCEL \
+            "Uma instalação do ${APP_NAME} já existe em:$\r$\n$0$\r$\n$\r$\nEste instalador vai ATUALIZÁ-LA para a nova versão:$\r$\n  • a versão em execução será parada automaticamente$\r$\n  • os dados (projetos, imagens, banco) serão preservados$\r$\n$\r$\nDeseja continuar com a atualização?" \
+            IDOK fim_deteccao
+        Abort
+    fim_deteccao:
 FunctionEnd
 
 ; =============================================================================
@@ -149,8 +161,22 @@ Section "Plataforma ${APP_NAME}" SecPrincipal
     ${If} $0 != 0
         DetailPrint ""
         DetailPrint "A instalação encontrou um problema (código $0)."
-        MessageBox MB_ICONEXCLAMATION \
-            "A instalação não foi concluída.$\r$\n$\r$\nCausas comuns:$\r$\n  • Docker Desktop parou durante o processo$\r$\n  • Memória insuficiente (mínimo 8 GB)$\r$\n  • Sem espaço em disco (mínimo 20 GB)$\r$\n$\r$\nO detalhamento está na janela do instalador."
+        ; O install.ps1 grava o motivo exato da falha em .install-error —
+        ; mostrá-lo evita o diálogo genérico que esconde a causa real.
+        StrCpy $1 ""
+        ${If} ${FileExists} "$LocalDir\.install-error"
+            FileOpen $2 "$LocalDir\.install-error" r
+            FileRead $2 $1
+            FileClose $2
+            DetailPrint "Motivo: $1"
+        ${EndIf}
+        ${If} $1 != ""
+            MessageBox MB_ICONEXCLAMATION \
+                "A instalação não foi concluída.$\r$\n$\r$\nMotivo:$\r$\n$1$\r$\n$\r$\nO detalhamento completo está na janela do instalador."
+        ${Else}
+            MessageBox MB_ICONEXCLAMATION \
+                "A instalação não foi concluída.$\r$\n$\r$\nCausas comuns:$\r$\n  • Docker Desktop parou durante o processo$\r$\n  • Memória insuficiente (mínimo 8 GB)$\r$\n  • Sem espaço em disco (mínimo 20 GB)$\r$\n$\r$\nO detalhamento está na janela do instalador."
+        ${EndIf}
         Abort "Instalação interrompida."
     ${EndIf}
 

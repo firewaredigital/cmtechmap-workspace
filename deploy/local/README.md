@@ -77,7 +77,26 @@ sudo ./install.sh --yes                            # sem perguntas
 
 ---
 
-## 4. Uso diário
+## 4. Atualizar uma instalação existente
+
+Rode o novo instalador **por cima** — em qualquer formato (`.exe`, zip ou
+tar.gz). O passo *"Verificando instalação anterior"* cuida de tudo:
+
+1. **Detecta** containers/volumes `cml-*` de qualquer instalação anterior;
+2. **Migra os segredos**: se o `.env.local` antigo estiver em outra pasta
+   (instalador novo em local diferente), ele é localizado pelo registro do
+   Windows ou pela etiqueta do compose nos containers antigos e copiado —
+   as senhas dos volumes continuam funcionando;
+3. **Para a versão em execução** (`docker stop`, 30 s de tolerância) antes
+   de compilar e subir a nova — portas são libertadas, nada conflita;
+4. **Preserva os dados**: os volumes nunca são apagados na atualização.
+
+Processamentos em andamento (fotogrametria, análises) são interrompidos —
+reprocesse o voo depois da atualização, se for o caso. Se algo impedir a
+atualização, o instalador gráfico mostra **o motivo exato** (lido de
+`.install-error`), não uma lista genérica de causas.
+
+## 5. Uso diário
 
 ### Ubuntu
 ```bash
@@ -97,7 +116,7 @@ sudo ./install.sh --yes                            # sem perguntas
 
 ---
 
-## 5. Arquitetura
+## 6. Arquitetura
 
 Um único ponto exposto — o gateway — faz tudo responder sob o mesmo domínio:
 
@@ -130,7 +149,7 @@ ortomosaico → modelo de elevação → detecção de edificações.
 
 ---
 
-## 6. Isolamento — não quebra nada
+## 7. Isolamento — não quebra nada
 
 Este ambiente é **completamente separado** dos demais:
 
@@ -147,7 +166,7 @@ o stack de desenvolvimento. Os três podem coexistir na mesma máquina.
 
 ---
 
-## 7. Problemas comuns
+## 8. Problemas comuns
 
 **"A porta 80 já está em uso"**
 Algo já serve HTTP na máquina. O instalador oferece parar o serviço ou usar
@@ -174,7 +193,7 @@ HTTP e a instalação fica inacessível. O instalador bloqueia esses sufixos.
 
 ---
 
-## 8. Segurança
+## 9. Segurança
 
 Os segredos são sorteados na instalação, mas **os usuários de demonstração do
 realm continuam com senhas públicas** (`superadmin@cmtechmap.com.br` /
