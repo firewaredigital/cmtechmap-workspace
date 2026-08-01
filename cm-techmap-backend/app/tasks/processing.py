@@ -58,6 +58,50 @@ def _run_async(coro):
         loop.close()
 
 
+async def _notify_upload_outcome(
+    upload_id: str,
+    project_name: str,
+    flight_id: str | None,
+    error: str | None = None,
+) -> None:
+    """
+    Notifica QUEM ENVIOU o upload sobre o desfecho do processamento.
+
+    As funções de conveniência do notification_service exigem sessão e
+    user_id — o destinatário sai de uploads.uploaded_by. Sem usuário
+    resolvível (upload semeado por script), a notificação é dispensada
+    em silêncio: notificação é cortesia, nunca pode derrubar o pipeline.
+    """
+    from sqlalchemy import text as _sa_text
+
+    from app.core.database import async_session_direct_factory
+    from app.services import notification_service as _ns
+
+    async with async_session_direct_factory() as session:
+        row = await session.execute(
+            _sa_text("SELECT uploaded_by FROM public.uploads WHERE id = CAST(:u AS uuid)"),
+            {"u": upload_id},
+        )
+        user_id = row.scalar()
+        if not user_id:
+            return
+        if error is None:
+            await _ns.notify_processing_complete(
+                session,
+                user_id=str(user_id),
+                project_name=project_name,
+                flight_id=str(flight_id or upload_id),
+            )
+        else:
+            await _ns.notify_processing_failed(
+                session,
+                user_id=str(user_id),
+                project_name=project_name,
+                error=error,
+            )
+        await session.commit()
+
+
 @shared_task(
     name="app.tasks.processing.process_drone_upload",
     bind=True,
@@ -671,11 +715,8 @@ def process_drone_upload(
 
         # ── NOTIFY: Processing complete ───────────────────────────────
         try:
-            from app.services.notification_service import NotificationService
-            _run_async(NotificationService.notify_processing_complete(
-                project_id=project_id or upload_id,
-                project_name=f"Upload {upload_id[:8]}",
-                assets_count=len(processed_assets),
+            _run_async(_notify_upload_outcome(
+                upload_id, f"Upload {upload_id[:8]}", flight_id,
             ))
         except Exception as e:
             logger.warning(f"[PIPELINE] Notification failed (non-critical): {e}")
@@ -694,11 +735,9 @@ def process_drone_upload(
 
         # Notify failure
         try:
-            from app.services.notification_service import NotificationService
-            _run_async(NotificationService.notify_processing_failed(
-                project_id=project_id or upload_id,
-                project_name=f"Upload {upload_id[:8]}",
-                error_message=str(exc)[:200],
+            _run_async(_notify_upload_outcome(
+                upload_id, f"Upload {upload_id[:8]}", flight_id,
+                error=str(exc)[:200],
             ))
         except Exception:
             pass
