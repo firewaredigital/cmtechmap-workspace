@@ -1000,6 +1000,38 @@ def run_ai_pipeline(
                 if provider_mode == "groq":
                     raise
 
+        if not features and settings.ai_detector == "ml":
+            # Rede neural de segmentação (mesma dos outros caminhos): a
+            # heurística de cor+altura abaixo fica só como reserva. A cota
+            # do solo vem do percentil 5 do DSM real — a base fixa de 800 m
+            # zerava toda detecção em terrenos fora dessa elevação.
+            try:
+                from app.core.ml_building_detector import (
+                    estimate_ground_elevation,
+                    extract_buildings_ml,
+                )
+
+                base_elev = 0.0
+                if dsm_local and os.path.exists(str(dsm_local)):
+                    base_elev = estimate_ground_elevation(dsm_local)
+                result_path = extract_buildings_ml(
+                    orthophoto_path=ortho_local,
+                    output_path=output_geojson,
+                    dsm_path=dsm_local,
+                    base_elevation=base_elev,
+                    model_path=settings.ai_model_path,
+                    model_url=settings.ai_model_url,
+                )
+                with open(result_path) as f:
+                    features = json.load(f).get("features", [])
+                used_model_version = "geobase_onnx_v1"
+                logger.info(
+                    f"[ML] Detecção neural: {len(features)} edificações "
+                    f"(solo estimado em {base_elev:.1f} m)"
+                )
+            except Exception as exc:
+                logger.exception(f"[ML] Rede neural falhou — heurística assume: {exc}")
+
         if not features:
             result_path = extract_building_footprints(
                 orthophoto_path=ortho_local,

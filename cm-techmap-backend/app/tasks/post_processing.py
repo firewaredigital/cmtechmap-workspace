@@ -631,15 +631,69 @@ def extract_buildings_from_real_dsm(
         publish_progress(task_id, "extraction", 40,
                          "Extracting building footprints from real elevation data...")
 
-        from app.core.building_extractor import extract_buildings_from_elevation
-
         footprints_path = os.path.join(work_dir, "footprints.geojson")
-        extract_buildings_from_elevation(
-            dsm_path=local_dsm,
-            dtm_path=local_dtm,
-            output_path=footprints_path,
-            min_height_m=2.0,
-        )
+        detector_model_version = "dsm_real_v1"
+
+        # A rede neural segmenta a IMAGEM (ortomosaico); o DSM real entra só
+        # para dar altura aos polígonos. A heurística por limiar de elevação
+        # fica como reserva — sozinha, ela zera em DSMs de cota absoluta.
+        if settings.ai_detector == "ml" and flight_id:
+            try:
+                from sqlalchemy import create_engine as _ce
+                from sqlalchemy import text as _sa
+
+                _eng = _ce(settings.database_url_sync)
+                try:
+                    with _eng.connect() as _conn:
+                        _apply_tenant_search_path(_conn, tenant_schema)
+                        _ortho = _conn.execute(_sa(
+                            "SELECT file_key, bucket_name FROM flight_assets "
+                            "WHERE flight_id = CAST(:fid AS uuid) "
+                            "AND asset_type = 'orthomosaic' AND is_active "
+                            "ORDER BY created_at DESC LIMIT 1"
+                        ), {"fid": flight_id}).fetchone()
+                finally:
+                    _eng.dispose()
+                if _ortho is None:
+                    raise RuntimeError("voo sem ortomosaico ativo para a rede neural")
+
+                local_ortho = os.path.join(work_dir, "orthomosaic.tif")
+                client.fget_object(_ortho[1], _ortho[0], local_ortho)
+
+                from app.core.ml_building_detector import (
+                    estimate_ground_elevation,
+                    extract_buildings_ml,
+                )
+
+                base_elev = estimate_ground_elevation(local_dsm)
+                extract_buildings_ml(
+                    orthophoto_path=local_ortho,
+                    output_path=footprints_path,
+                    dsm_path=local_dsm,
+                    base_elevation=base_elev,
+                    model_path=settings.ai_model_path,
+                    model_url=settings.ai_model_url,
+                )
+                detector_model_version = "geobase_onnx_v1"
+                logger.info(
+                    f"[REAL-DSM-BUILDINGS] Detecção neural sobre o ortomosaico "
+                    f"(solo estimado em {base_elev:.1f} m)"
+                )
+            except Exception as exc:
+                logger.exception(
+                    f"[REAL-DSM-BUILDINGS] Rede neural indisponível — "
+                    f"heurística de elevação assume: {exc}"
+                )
+
+        if not os.path.exists(footprints_path):
+            from app.core.building_extractor import extract_buildings_from_elevation
+
+            extract_buildings_from_elevation(
+                dsm_path=local_dsm,
+                dtm_path=local_dtm,
+                output_path=footprints_path,
+                min_height_m=2.0,
+            )
 
         # ── Step 4: Upload footprints to MinIO ────────────────────────────
         publish_progress(task_id, "uploading", 75, "Uploading building footprints...")
@@ -701,7 +755,7 @@ def extract_buildings_from_real_dsm(
                         footprint_features = json_mod2.load(f).get("features", [])
                     detections_written = _persist_building_detections(
                         conn, str(ortho_row[0]), footprint_features,
-                        model_version="dsm_real_v1",
+                        model_version=detector_model_version,
                     )
                     logger.info(
                         f"[REAL-DSM-BUILDINGS] {detections_written} detecções gravadas"

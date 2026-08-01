@@ -62,6 +62,26 @@ def ensure_model(model_path: str, model_url: str | None = None) -> str:
     return str(path)
 
 
+def estimate_ground_elevation(dsm_path, percentile: float = 5.0) -> float:
+    """
+    Estima a cota do solo de um DSM ABSOLUTO (elevações reais, ex.: ~1100 m
+    em Brasília) pelo percentil baixo — alturas de edificação passam a ser
+    (média do DSM no polígono − solo). Lê o raster decimado (1024²) porque
+    um percentil não precisa da resolução completa.
+    """
+    import rasterio
+
+    with rasterio.open(str(dsm_path)) as d:
+        h = min(d.height, 1024)
+        w = min(d.width, 1024)
+        arr = d.read(1, out_shape=(h, w), masked=True).astype("float32")
+    vals = arr.compressed() if hasattr(arr, "compressed") else arr[~np.isnan(arr)]
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return 0.0
+    return float(np.nanpercentile(vals, percentile))
+
+
 def extract_buildings_ml(
     orthophoto_path,
     output_path,
