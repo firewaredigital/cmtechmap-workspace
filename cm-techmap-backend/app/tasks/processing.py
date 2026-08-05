@@ -851,6 +851,15 @@ def _update_database_records(
                 }
 
                 if resolved_flight_id:
+                    # Reprocessar um voo publica versões novas dos mesmos
+                    # tipos; sem isto as linhas antigas ficavam ativas e a
+                    # interface mostrava cards multiplicados por execução.
+                    conn.execute(sa_text(
+                        "UPDATE flight_assets SET is_active = false "
+                        "WHERE flight_id = :flight_id AND asset_type = :asset_type "
+                        "AND is_active = true"
+                    ), {"flight_id": insert_params["flight_id"],
+                        "asset_type": insert_params["asset_type"]})
                     conn.execute(sa_text(
                         "INSERT INTO flight_assets "
                         "(flight_id, asset_type, file_key, bucket_name, "

@@ -1,5 +1,6 @@
 """CM TECHMAP — Drone Flight Routes"""
 
+import logging
 import uuid
 from typing import Any
 
@@ -11,6 +12,8 @@ from app.config import get_settings
 from app.core.database import current_tenant_schema
 from app.dependencies import get_db, require_gestor, require_operador, require_viewer
 from app.schemas.flight import FlightAsset, FlightAssetsRead, FlightCreate, FlightProcessRequest, FlightRead
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects/{project_id}/flights", tags=["Flights"])
 settings = get_settings()
@@ -85,11 +88,13 @@ async def get_flight_assets(
     assets: list[FlightAsset] = []
 
     # Query all assets from flight_assets table
+    # DISTINCT ON: reprocessamentos publicam novas linhas por asset_type; o
+    # usuário deve ver UM card por tipo (o mais recente), nunca triplicatas.
     assets_result = await db.execute(text(
-        "SELECT id, asset_type, file_key, bucket_name, "
-        "file_size_bytes, resolution_cm "
+        "SELECT DISTINCT ON (asset_type) id, asset_type, file_key, "
+        "bucket_name, file_size_bytes, resolution_cm "
         "FROM flight_assets WHERE flight_id = :fid AND is_active = true "
-        "ORDER BY created_at DESC"
+        "ORDER BY asset_type, created_at DESC"
     ), {"fid": str(flight_id)})
 
     for r in assets_result.fetchall():
@@ -151,8 +156,15 @@ async def download_flight_asset(
     from app.core.storage import get_minio_client
     try:
         obj = get_minio_client().get_object(bucket, file_key)
-    except Exception:
-        raise HTTPException(status_code=404, detail="Arquivo não encontrado no storage")
+    except Exception as e:
+        # Só "objeto não existe" é 404. Falha transitória do storage virava
+        # 404 indistinguível — o usuário via "não encontrado" para um
+        # arquivo que existe, e o log não contava nada.
+        code = getattr(e, "code", "")
+        if code in ("NoSuchKey", "NoSuchBucket"):
+            raise HTTPException(status_code=404, detail="Arquivo não encontrado no storage")
+        logger.error(f"[DOWNLOAD] Storage indisponível para {bucket}/{file_key}: {e}")
+        raise HTTPException(status_code=502, detail="Storage temporariamente indisponível — tente novamente")
 
     ext = file_key.rsplit(".", 1)[-1].lower() if "." in file_key else "bin"
     media = {"tif": "image/tiff", "tiff": "image/tiff",
