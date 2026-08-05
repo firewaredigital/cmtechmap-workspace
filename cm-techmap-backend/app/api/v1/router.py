@@ -26,7 +26,11 @@ from app.api.v1.websocket import router as websocket_router
 
 api_v1_router = APIRouter(prefix="/api/v1")
 
+from app.api.v1.telemetry import error_logs_router, telemetry_router  # noqa: E402
+
 api_v1_router.include_router(health_router)
+api_v1_router.include_router(telemetry_router)
+api_v1_router.include_router(error_logs_router)
 api_v1_router.include_router(auth_router)
 api_v1_router.include_router(users_router)
 api_v1_router.include_router(projects_router)
