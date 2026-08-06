@@ -79,11 +79,28 @@ def adjudicate_detection(sess, inp_name, ortho_ds, ndsm_win_fn, det: dict) -> di
 
     yes = sum(votes.values())
     unanimous = yes == len(votes)
-    promoted = (
-        "confirmed_unanimous" if unanimous
-        else "confirmed" if yes >= 4
-        else "rejected" if yes <= 1
-        else None  # permanece weak — honestidade sobre a dúvida
-    )
+
+    # VETO DO 3D: "edificação" que não se eleva do solo não pode ser
+    # confirmada por maioria da rede. Sem esta regra, pátio, calçada e
+    # pavimento pintado ganhavam 4/5 votos (3 da rede + planaridade — piso é
+    # plano por definição) e entravam na malha fina como imóvel tributável.
+    # Medido no voo real antes da correção: 10 "confirmadas" com altura
+    # média de 0,005 m.
+    has_elevation = votes.get("height3d", False)
+    net_yes = sum(1 for k, v in votes.items() if k.startswith("net@") and v)
+
+    if unanimous:
+        promoted = "confirmed_unanimous"
+    elif has_elevation and yes >= 4:
+        promoted = "confirmed"
+    elif not has_elevation and net_yes >= 2:
+        # A rede insiste, o 3D nega: é dúvida legítima para revisão humana,
+        # nunca confirmação automática.
+        promoted = "weak"
+    elif yes <= 1:
+        promoted = "rejected"
+    else:
+        promoted = None  # permanece como está — honestidade sobre a dúvida
     return {"id": det["id"], "votes": votes, "unanimous": unanimous,
+            "has_elevation": has_elevation, "net_votes": net_yes,
             "promoted_status": promoted, "votes_json": json.dumps(votes)}

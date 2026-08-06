@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.database import current_tenant_schema
-from app.dependencies import get_db, require_gestor, require_operador, require_viewer
+from app.dependencies import get_db, optional_user, require_gestor, require_operador, require_viewer
 from app.schemas.flight import FlightAsset, FlightAssetsRead, FlightCreate, FlightProcessRequest, FlightRead
 
 logger = logging.getLogger(__name__)
@@ -199,17 +199,87 @@ async def get_latest_audit_certificate(
             "passed": row[4], "details": row[5]}
 
 
-@router.get("/{flight_id}/assets/{asset_id}/download")
-async def download_flight_asset(
+@router.post("/{flight_id}/assets/{asset_id}/download-ticket")
+async def create_download_ticket(
     project_id: uuid.UUID,
     flight_id: uuid.UUID,
     asset_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: dict[str, Any] = Depends(require_viewer),
 ):
-    """Stream a flight asset (ortomosaico, DSM, GeoJSON) through the API."""
+    """
+    Emite um TICKET de download de uso único e vida curta (120 s).
+
+    Por que existir: baixar por fetch+blob obriga o navegador a segurar o
+    arquivo inteiro em memória (um DSM tem ~194 MB) e ainda dispara o aviso
+    "loaded over an insecure connection" em instalação HTTP. Com o ticket, o
+    navegador baixa pelo caminho nativo — streaming direto, barra de
+    progresso real, memória constante — sem jamais expor o JWT na URL.
+    """
+    row = (await db.execute(text(
+        "SELECT 1 FROM flight_assets fa JOIN flights f ON f.id = fa.flight_id "
+        "WHERE fa.id = :aid AND fa.flight_id = :fid AND f.project_id = :pid"
+    ), {"aid": str(asset_id), "fid": str(flight_id), "pid": str(project_id)})).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Asset não encontrado neste voo")
+
+    import secrets
+
+    from app.core.pubsub import _get_sync_redis as get_redis_sync
+
+    token = secrets.token_urlsafe(32)
+    payload = f"{project_id}:{flight_id}:{asset_id}:{user.get('sub') or ''}"
+    try:
+        r = get_redis_sync()
+        r.setex(f"dlticket:{token}", 120, payload)
+    except Exception as e:
+        logger.error(f"[DOWNLOAD] Falha ao emitir ticket: {e}")
+        raise HTTPException(status_code=503, detail="Não foi possível emitir o ticket de download")
+    return {
+        "ticket": token,
+        "expires_in": 120,
+        "url": (
+            f"/api/v1/projects/{project_id}/flights/{flight_id}"
+            f"/assets/{asset_id}/download?ticket={token}"
+        ),
+    }
+
+
+@router.get("/{flight_id}/assets/{asset_id}/download")
+async def download_flight_asset(
+    project_id: uuid.UUID,
+    flight_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    ticket: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: dict[str, Any] | None = Depends(optional_user),
+):
+    """
+    Stream de um asset do voo. Autoriza por Bearer OU por ticket de uso
+    único (emitido em /download-ticket) — este último permite o download
+    nativo do navegador, sem blob em memória.
+    """
     from fastapi import HTTPException
     from fastapi.responses import StreamingResponse
+
+    if ticket:
+        from app.core.pubsub import _get_sync_redis as get_redis_sync
+        expected = f"{project_id}:{flight_id}:{asset_id}"
+        try:
+            r = get_redis_sync()
+            stored = r.get(f"dlticket:{ticket}")
+            stored = stored.decode() if isinstance(stored, bytes) else stored
+        except Exception:
+            stored = None
+        # Uso único: consumir ANTES de servir impede replay do link.
+        if not stored or not str(stored).startswith(expected):
+            raise HTTPException(status_code=403, detail="Ticket de download inválido ou expirado")
+        try:
+            r.delete(f"dlticket:{ticket}")
+        except Exception:
+            pass
+    elif user is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
 
     result = await db.execute(text(
         "SELECT fa.file_key, fa.bucket_name, fa.asset_type "

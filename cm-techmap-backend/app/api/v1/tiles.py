@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -722,6 +723,24 @@ async def get_dsm_visual_info(
         raise HTTPException(status_code=502, detail=f"TiTiler indisponível: {e}")
 
     band = stats.get("b1") or next(iter(stats.values()), {})
+    vmin, vmax = band.get("min"), band.get("max")
+    p2, p98 = band.get("percentile_2"), band.get("percentile_98")
+
+    # O pipeline publica o DSM NORMALIZADO (altura acima do solo). Chamar
+    # isso de "elevação" induz o operador a ler cota absoluta. A detecção é
+    # explícita: cota máxima baixa + mínima ~0 ⇒ nDSM.
+    is_normalized = (
+        vmax is not None and vmin is not None
+        and vmax < 100.0 and abs(vmin) < 5.0
+    )
+    # Faixa de COR robusta: min/max são dominados por outliers (um poste de
+    # 18 m achata todo o casario em 3 m). p2–p98 dá contraste real; os
+    # extremos continuam no retorno para a legenda ser honesta.
+    lo = p2 if p2 is not None else vmin
+    hi = p98 if p98 is not None else vmax
+    if lo is not None and hi is not None and hi - lo < 0.5:
+        lo, hi = vmin, vmax  # faixa degenerada: volta ao total
+
     return {
         "asset_id": asset["id"],
         "resolution_cm": asset["resolution_cm"],
@@ -731,13 +750,23 @@ async def get_dsm_visual_info(
         },
         # Valores EXATOS do raster — sem arredondamento no servidor
         "elevation": {
-            "min_m": band.get("min"),
-            "max_m": band.get("max"),
+            "min_m": vmin,
+            "max_m": vmax,
             "mean_m": band.get("mean"),
             "std_m": band.get("std"),
-            "percentile_2": band.get("percentile_2"),
-            "percentile_98": band.get("percentile_98"),
+            "percentile_2": p2,
+            "percentile_98": p98,
         },
+        "is_normalized": is_normalized,
+        "measure_label": (
+            "Altura acima do solo (nDSM)" if is_normalized
+            else "Elevação absoluta (DSM)"
+        ),
+        # O cliente usa esta faixa para pedir os tiles E desenhar a legenda —
+        # cor e número nunca divergem.
+        "recommended_rescale": {"min": lo, "max": hi},
+        "nodata": 0 if is_normalized else None,
+        "available_modes": ["height", "hillshade", "contours"],
     }
 
 
@@ -747,20 +776,45 @@ async def get_dsm_visual_tile(
     z: int,
     x: int,
     y: int,
-    rescale: str,
-    colormap: str = "terrain",
+    rescale: str | None = None,
+    colormap: str = "viridis",
+    mode: str = "height",
+    nodata: float | None = None,
+    resampling: str = "bilinear",
     db: AsyncSession = Depends(get_db),
     user: dict[str, Any] = Depends(require_viewer),
 ):
-    """Tile visual do DSM colorizado. `rescale=min,max` vem do visual-info —
-    a MESMA faixa vira legenda na tela, então cor e valor ficam consistentes."""
+    """
+    Tile visual do DSM. `rescale=min,max` vem do visual-info — a MESMA faixa
+    vira legenda, então cor e valor nunca divergem.
+
+    Três lições de renderização, todas visíveis a olho nu antes da correção:
+    - `nodata` PRECISA ser transparente: o retângulo do voo é ~59% vazio e,
+      pintado, virava um borrão sólido sobre o bairro;
+    - a faixa min–max é sequestrada por outliers (um poste de 18 m achata
+      todo o casario) — a faixa robusta p2–p98 devolve o contraste;
+    - `nearest` num raster de 2,31 cm/px visto de longe vira chuvisco:
+      cada pixel de tela amostra 1 de ~50. O dado permanece exato (a
+      medição lê o COG direto); a EXIBIÇÃO usa reamostragem suave.
+
+    `mode`: height (colorizado) | hillshade (sombreado de relevo) | contours.
+    """
     asset = await _resolve_dsm_asset(asset_id, db)
     s3_url = f"s3://{asset['bucket_name']}/{asset['file_key']}"
+    params: dict[str, Any] = {"url": s3_url, "resampling": resampling}
+    if nodata is not None:
+        params["nodata"] = nodata
+    if mode in ("hillshade", "contours"):
+        params["algorithm"] = mode
+    else:
+        params["colormap_name"] = colormap
+        if rescale:
+            params["rescale"] = rescale
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.get(
                 f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}",
-                params={"url": s3_url, "rescale": rescale, "colormap_name": colormap},
+                params=params,
             )
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"TiTiler error: {e}")
@@ -823,6 +877,189 @@ async def get_dsm_point_elevation(
         "asset_id": asset["id"],
         "resolution_cm": asset["resolution_cm"],
     }
+
+
+# ── MEDIÇÕES SOB DEMANDA no DSM (leitura direta do COG, sem aproximação) ────
+# O operador desenha no mapa e recebe número medido, não estimado: estatística
+# zonal de um polígono e perfil de elevação de uma linha. Ambos leem o raster
+# publicado — o mesmo que ele pode baixar e conferir no QGIS.
+
+
+class GeometryPayload(BaseModel):
+    """GeoJSON (EPSG:4326) desenhado pelo usuário no mapa."""
+
+    geometry: dict[str, Any]
+    samples: int = 256  # só para perfil
+
+
+@router.post("/dsm/{asset_id}/zonal-stats")
+async def dsm_zonal_stats(
+    asset_id: str,
+    payload: GeometryPayload,
+    db: AsyncSession = Depends(get_db),
+    user: dict[str, Any] = Depends(require_viewer),
+):
+    """
+    Estatística ZONAL exata de um polígono desenhado: área projetada,
+    mínimo/máximo/média/desvio/mediana, VOLUME (Σ altura × área do pixel),
+    contagem de pixels e cobertura válida. Tudo lido do COG, sem reamostrar.
+    """
+    import os
+    import tempfile
+
+    import numpy as np
+    import rasterio
+    from rasterio.mask import mask as rio_mask
+    from rasterio.warp import transform_geom
+    from shapely.geometry import shape
+
+    asset = await _resolve_dsm_asset(asset_id, db)
+    geom = payload.geometry
+    if not geom or geom.get("type") not in ("Polygon", "MultiPolygon"):
+        raise HTTPException(status_code=422, detail="Envie um Polygon ou MultiPolygon em GeoJSON")
+
+    work = tempfile.mkdtemp(prefix="cm_zonal_")
+    local = os.path.join(work, "dsm.tif")
+    try:
+        from app.core.storage import get_minio_client
+        get_minio_client().fget_object(asset["bucket_name"], asset["file_key"], local)
+
+        with rasterio.open(local) as d:
+            gn = transform_geom("EPSG:4326", d.crs.to_string(), geom)
+            try:
+                win, _tr = rio_mask(d, [gn], crop=True, filled=False)
+            except ValueError:
+                raise HTTPException(status_code=404, detail="Polígono fora da área do levantamento")
+            px_area = abs(d.transform.a * d.transform.e)
+            arr = win[0]
+            vals = arr.compressed().astype("float64") if np.ma.isMaskedArray(arr) else arr.astype("float64").ravel()
+            vals = vals[np.isfinite(vals)]
+            # nodata=0 no nDSM: separar "sem dado" de "solo" evita média mentirosa
+            nonzero = vals[vals != 0]
+            # Cobertura relativa ao POLÍGONO, não ao retângulo do recorte: um
+            # polígono diagonal fino ocupa fração pequena do bbox e reportar
+            # 5% de cobertura assustaria o operador sem motivo.
+            from rasterio.features import geometry_mask
+            inside = ~geometry_mask(
+                [gn], out_shape=arr.shape, transform=_tr, invert=False
+            )
+            total_px = int(inside.sum()) or int(arr.size)
+            valid_px = int(vals.size)
+            poly_area_m2 = float(shape(gn).area) if d.crs.is_projected else None
+
+        if valid_px == 0:
+            raise HTTPException(status_code=404, detail="Sem dado de elevação sob o polígono")
+
+        base = nonzero if nonzero.size else vals
+        return {
+            "asset_id": asset["id"],
+            "area_m2": round(poly_area_m2, 3) if poly_area_m2 is not None else None,
+            "pixel_area_m2": round(px_area, 6),
+            "pixels_total": total_px,
+            "pixels_with_data": valid_px,
+            "coverage_pct": round(100.0 * valid_px / total_px, 2) if total_px else 0.0,
+            "elevation": {
+                "min_m": round(float(np.min(base)), 3),
+                "max_m": round(float(np.max(base)), 3),
+                "mean_m": round(float(np.mean(base)), 3),
+                "median_m": round(float(np.median(base)), 3),
+                "std_m": round(float(np.std(base)), 3),
+                "p95_m": round(float(np.percentile(base, 95)), 3),
+            },
+            "volume_m3": round(float(np.sum(np.clip(vals, 0, None)) * px_area), 3),
+            "resolution_cm": asset["resolution_cm"],
+            "note": (
+                "Volume = soma das alturas acima do solo × área do pixel; "
+                "estatísticas ignoram pixels sem dado."
+            ),
+        }
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+
+
+@router.post("/dsm/{asset_id}/profile")
+async def dsm_elevation_profile(
+    asset_id: str,
+    payload: GeometryPayload,
+    db: AsyncSession = Depends(get_db),
+    user: dict[str, Any] = Depends(require_viewer),
+):
+    """
+    PERFIL de elevação ao longo de uma linha desenhada: N amostras lidas
+    pixel a pixel, distância acumulada, ganho/perda, declividade média e
+    máxima. Base para corte/aterro, drenagem e verificação de rampa.
+    """
+    import os
+    import tempfile
+
+    import numpy as np
+    import rasterio
+    from rasterio.warp import transform_geom
+    from shapely.geometry import shape
+
+    asset = await _resolve_dsm_asset(asset_id, db)
+    geom = payload.geometry
+    if not geom or geom.get("type") not in ("LineString", "MultiLineString"):
+        raise HTTPException(status_code=422, detail="Envie uma LineString em GeoJSON")
+    n = max(8, min(payload.samples, 2000))
+
+    work = tempfile.mkdtemp(prefix="cm_prof_")
+    local = os.path.join(work, "dsm.tif")
+    try:
+        from app.core.storage import get_minio_client
+        get_minio_client().fget_object(asset["bucket_name"], asset["file_key"], local)
+
+        with rasterio.open(local) as d:
+            gn = transform_geom("EPSG:4326", d.crs.to_string(), geom)
+            line = shape(gn)
+            total_len = float(line.length)  # metros quando o CRS é projetado
+            pts = [line.interpolate(i / (n - 1), normalized=True) for i in range(n)]
+            coords = [(p.x, p.y) for p in pts]
+            sampled = [float(v[0]) for v in d.sample(coords)]
+
+        nodata_mask = [(v == 0 or not np.isfinite(v)) for v in sampled]
+        dist = [round(total_len * i / (n - 1), 3) for i in range(n)]
+        series = [
+            {"d_m": dist[i], "z_m": (None if nodata_mask[i] else round(sampled[i], 3))}
+            for i in range(n)
+        ]
+        zs = np.array([v for v, bad in zip(sampled, nodata_mask, strict=False) if not bad])
+        gain = loss = 0.0
+        slopes = []
+        prev = None
+        step = total_len / (n - 1) if n > 1 else 0.0
+        for i, v in enumerate(sampled):
+            if nodata_mask[i]:
+                prev = None
+                continue
+            if prev is not None and step > 0:
+                dz = v - prev
+                gain += max(0.0, dz)
+                loss += max(0.0, -dz)
+                slopes.append(abs(dz) / step * 100.0)
+            prev = v
+        return {
+            "asset_id": asset["id"],
+            "length_m": round(total_len, 3),
+            "samples": n,
+            "sample_spacing_m": round(step, 4),
+            "profile": series,
+            "stats": {
+                "min_m": round(float(zs.min()), 3) if zs.size else None,
+                "max_m": round(float(zs.max()), 3) if zs.size else None,
+                "mean_m": round(float(zs.mean()), 3) if zs.size else None,
+                "gain_m": round(gain, 3),
+                "loss_m": round(loss, 3),
+                "slope_mean_pct": round(float(np.mean(slopes)), 2) if slopes else None,
+                "slope_max_pct": round(float(np.max(slopes)), 2) if slopes else None,
+                "coverage_pct": round(100.0 * zs.size / n, 2),
+            },
+            "resolution_cm": asset["resolution_cm"],
+        }
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
 
 
 # ── Detecções da IA com medições exatas (fonte: banco, mesma da malha fina) ──

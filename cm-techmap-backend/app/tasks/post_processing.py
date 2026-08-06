@@ -846,12 +846,20 @@ def validate_detections_elevation(
                             "validated_at = now() WHERE id = CAST(:id AS uuid)"
                         ), {"st": r["validation_status"], "id": r["id"]})
                         continue
+                    # As MEDIÇÕES são sempre atualizadas; o VEREDITO só é
+                    # rebaixado se ainda não passou pela adjudicação nativa
+                    # (que custa minutos e decide com 5 juízes). Sem esta
+                    # guarda, revalidar apagava todo 'confirmed_unanimous'.
                     conn.execute(_sa(
                         "UPDATE ai_detections SET "
                         "height_measured_m = :h, height_std_m = :hs, "
                         "volume_m3 = :v, area_uncertainty_sqm = :au, "
                         "planarity = :pl, evidence_score = :ev, "
-                        "validation_status = :st, validated_at = now() "
+                        "validation_status = CASE "
+                        "  WHEN consensus_votes IS NOT NULL "
+                        "   AND validation_status IN ('confirmed_unanimous','rejected') "
+                        "  THEN validation_status ELSE :st END, "
+                        "validated_at = now() "
                         "WHERE id = CAST(:id AS uuid)"
                     ), {
                         "h": r["height_measured_m"], "hs": r["height_std_m"],

@@ -35,6 +35,20 @@ async def get_current_user(request: Request) -> dict[str, Any]:
     return await get_current_user_from_request(request)
 
 
+async def optional_user(request: Request) -> dict[str, Any] | None:
+    """
+    Identidade quando houver token válido; None quando não houver.
+
+    Usada por endpoints que aceitam DUAS formas de autorização (ex.: download
+    por Bearer OU por ticket de uso único) — sem isto, o FastAPI rejeitaria
+    a requisição do ticket antes de o handler poder validá-lo.
+    """
+    try:
+        return await get_current_user_from_request(request)
+    except Exception:
+        return None
+
+
 def require_roles(*roles: str):
     """
     Dependency factory that enforces role-based access control.
