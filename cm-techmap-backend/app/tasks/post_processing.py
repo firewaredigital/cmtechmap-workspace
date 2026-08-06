@@ -568,6 +568,214 @@ def generate_dsm_and_buildings(
 
 
 @shared_task(
+    name="app.tasks.post_processing.adjudicate_weak_detections",
+    bind=True,
+    max_retries=1,
+    queue="processing",
+    time_limit=3600,
+)
+def adjudicate_weak_detections(self, flight_id: str, tenant_schema: str | None = None):
+    """
+    Caminho caro para a dúvida: cada detecção "weak" é reinferida no recorte
+    NATIVO da ortofoto (sem downsample) com ensemble de thresholds + juízes
+    3D. Grava consensus_votes/is_unanimous e promove/rejeita/mantém.
+    """
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    import numpy as _np
+    from sqlalchemy import create_engine as _ce
+    from sqlalchemy import text as _sa
+
+    from app.core.detection_adjudicator import adjudicate_detection
+    from app.core.ml_building_detector import ensure_model
+    from app.core.storage import get_minio_client
+
+    work = _tempfile.mkdtemp(prefix="cm_adj_")
+    try:
+        import json as _json
+
+        import onnxruntime as _ort
+        import rasterio as _rio
+        from rasterio.mask import mask as _rio_mask
+        from rasterio.warp import transform_geom as _tg
+
+        eng = _ce(settings.database_url_sync)
+        try:
+            with eng.connect() as conn:
+                _apply_tenant_search_path(conn, tenant_schema)
+                assets = dict(conn.execute(_sa(
+                    "SELECT asset_type, file_key || '|' || COALESCE(bucket_name,'') "
+                    "FROM flight_assets WHERE flight_id = CAST(:fid AS uuid) "
+                    "AND is_active AND asset_type IN ('orthomosaic','dsm')"
+                ), {"fid": flight_id}).fetchall())
+                if "orthomosaic" not in assets or "dsm" not in assets:
+                    return {"status": "missing_assets", "flight_id": flight_id}
+                client = get_minio_client()
+                paths = {}
+                for atype, packed in assets.items():
+                    key, bucket = packed.rsplit("|", 1)
+                    local = _os.path.join(work, f"{atype}.tif")
+                    client.fget_object(bucket or "elevation-models", key, local)
+                    paths[atype] = local
+
+                rows = conn.execute(_sa(
+                    "SELECT d.id, ST_AsGeoJSON(d.polygon) FROM ai_detections d "
+                    "JOIN flight_assets fa ON d.flight_asset_id = fa.id "
+                    "WHERE fa.flight_id = CAST(:fid AS uuid) AND fa.is_active "
+                    "AND d.validation_status = 'weak' AND d.polygon IS NOT NULL"
+                ), {"fid": flight_id}).fetchall()
+                if not rows:
+                    return {"status": "nothing_weak", "flight_id": flight_id}
+
+                sess = _ort.InferenceSession(
+                    ensure_model(settings.ai_model_path, settings.ai_model_url),
+                    providers=["CPUExecutionProvider"],
+                )
+                inp = sess.get_inputs()[0].name
+
+                promoted = rejected = unanimous = kept = 0
+                with _rio.open(paths["orthomosaic"]) as ortho, _rio.open(paths["dsm"]) as dsm:
+                    def ndsm_win(geom_native):
+                        try:
+                            g = _tg(ortho.crs.to_string(), dsm.crs.to_string(), geom_native)
+                            win, _tr = _rio_mask(dsm, [g], crop=True, filled=False)
+                            v = win[0].compressed().astype("float64")
+                            return v[_np.isfinite(v)]
+                        except Exception:
+                            return None
+
+                    for det_id, geo in rows:
+                        r = adjudicate_detection(
+                            sess, inp, ortho, ndsm_win,
+                            {"id": str(det_id), "geometry": _json.loads(geo)},
+                        )
+                        st = r["promoted_status"]
+                        if st == "confirmed_unanimous":
+                            unanimous += 1
+                        elif st == "confirmed":
+                            promoted += 1
+                        elif st == "rejected":
+                            rejected += 1
+                        else:
+                            kept += 1
+                        conn.execute(_sa(
+                            "UPDATE ai_detections SET "
+                            "consensus_votes = CAST(:v AS jsonb), "
+                            "is_unanimous = :u, "
+                            "validation_status = COALESCE(:st, validation_status), "
+                            "validated_at = now() WHERE id = CAST(:id AS uuid)"
+                        ), {"v": r.get("votes_json", "{}"), "u": r["unanimous"],
+                            "st": st, "id": str(det_id)})
+                conn.commit()
+                summary = {"status": "completed", "flight_id": flight_id,
+                           "adjudicated": len(rows), "unanimous": unanimous,
+                           "promoted": promoted, "rejected": rejected, "kept_weak": kept}
+                logger.info(f"[ADJUDICATE] {summary}")
+                return summary
+        finally:
+            eng.dispose()
+    except Exception as exc:
+        logger.error(f"[ADJUDICATE] Falha: {exc}")
+        raise self.retry(exc=exc)
+    finally:
+        _shutil.rmtree(work, ignore_errors=True)
+
+
+@shared_task(
+    name="app.tasks.post_processing.audit_measurements",
+    bind=True,
+    max_retries=0,
+    queue="processing",
+    time_limit=1800,
+)
+def audit_measurements(self, flight_id: str, sample_size: int = 10, tenant_schema: str | None = None):
+    """
+    AUTOPROVA: recomputa medições gravadas por um caminho de código
+    INDEPENDENTE (rasterio puro, inline — nenhum helper compartilhado com o
+    produtor) e emite certificado bit a bit em audit_certificates.
+    """
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    import numpy as _np
+    from sqlalchemy import create_engine as _ce
+    from sqlalchemy import text as _sa
+
+    from app.core.storage import get_minio_client
+
+    work = _tempfile.mkdtemp(prefix="cm_audit_")
+    try:
+        import json as _json
+
+        import rasterio as _rio
+        from rasterio.mask import mask as _rio_mask
+        from rasterio.warp import transform_geom as _tg
+
+        eng = _ce(settings.database_url_sync)
+        try:
+            with eng.connect() as conn:
+                _apply_tenant_search_path(conn, tenant_schema)
+                row = conn.execute(_sa(
+                    "SELECT file_key, COALESCE(bucket_name,'elevation-models') "
+                    "FROM flight_assets WHERE flight_id = CAST(:fid AS uuid) "
+                    "AND is_active AND asset_type = 'dsm' LIMIT 1"
+                ), {"fid": flight_id}).fetchone()
+                if not row:
+                    return {"status": "no_dsm"}
+                local_dsm = _os.path.join(work, "dsm.tif")
+                get_minio_client().fget_object(row[1], row[0], local_dsm)
+
+                dets = conn.execute(_sa(
+                    "SELECT d.id, ST_AsGeoJSON(d.polygon), d.height_measured_m, d.volume_m3 "
+                    "FROM ai_detections d JOIN flight_assets fa ON d.flight_asset_id = fa.id "
+                    "WHERE fa.flight_id = CAST(:fid AS uuid) AND fa.is_active "
+                    "AND d.height_measured_m IS NOT NULL "
+                    "ORDER BY md5(d.id::text) LIMIT :k"
+                ), {"fid": flight_id, "k": sample_size}).fetchall()
+
+                checks = []
+                with _rio.open(local_dsm) as d:
+                    px_area = abs(d.transform.a * d.transform.e)
+                    for det_id, geo, h_stored, v_stored in dets:
+                        g = _tg("EPSG:4326", d.crs.to_string(), _json.loads(geo))
+                        win, _tr = _rio_mask(d, [g], crop=True, filled=False)
+                        vals = win[0].compressed().astype("float64")
+                        vals = vals[_np.isfinite(vals)]
+                        h_ind = round(float(_np.mean(vals)), 3)
+                        v_ind = round(float(_np.sum(_np.clip(vals, 0, None)) * px_area), 2)
+                        checks.append({
+                            "detection_id": str(det_id),
+                            "height_stored": float(h_stored), "height_recomputed": h_ind,
+                            "height_identical": h_ind == float(h_stored),
+                            "volume_stored": float(v_stored), "volume_recomputed": v_ind,
+                            "volume_identical": v_ind == float(v_stored),
+                        })
+                passed = sum(1 for c in checks if c["height_identical"] and c["volume_identical"])
+                total = len(checks)
+                cert = conn.execute(_sa(
+                    "INSERT INTO public.audit_certificates "
+                    "(flight_id, checks_total, checks_passed, passed, details) "
+                    "VALUES (CAST(:fid AS uuid), :t, :p, :ok, CAST(:d AS jsonb)) "
+                    "RETURNING id, run_at"
+                ), {"fid": flight_id, "t": total, "p": passed,
+                    "ok": passed == total and total > 0,
+                    "d": _json.dumps(checks)}).fetchone()
+                conn.commit()
+                summary = {"status": "completed", "certificate_id": str(cert[0]),
+                           "checks_total": total, "checks_passed": passed,
+                           "passed": passed == total and total > 0}
+                logger.info(f"[AUDIT] {summary}")
+                return summary
+        finally:
+            eng.dispose()
+    finally:
+        _shutil.rmtree(work, ignore_errors=True)
+
+
+@shared_task(
     name="app.tasks.post_processing.validate_detections_elevation",
     bind=True,
     max_retries=1,
@@ -662,6 +870,16 @@ def validate_detections_elevation(
                     "contradicted": sum(1 for r in results if r.get("validation_status") == "contradicted"),
                 }
                 logger.info(f"[VALIDATE] {summary}")
+                if summary["weak"] > 0:
+                    # Dúvida não fica parada: as "weak" vão para o caminho
+                    # CARO — reinferência em resolução nativa com ensemble
+                    # de juízes. Unanimidade vira fato medido por objeto.
+                    adjudicate_weak_detections.apply_async(
+                        kwargs={"flight_id": flight_id,
+                                "tenant_schema": tenant_schema},
+                        countdown=5,
+                    )
+                    logger.info(f"[VALIDATE] {summary['weak']} weak enviadas à adjudicação nativa")
                 return summary
         finally:
             eng.dispose()

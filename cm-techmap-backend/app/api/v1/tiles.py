@@ -816,7 +816,8 @@ async def get_detections_for_project(
         "SELECT d.id, ST_AsGeoJSON(d.polygon), d.area_sqm, d.height_m, "
         "d.confidence, d.model_version, d.detection_class, "
         "d.height_measured_m, d.height_std_m, d.volume_m3, "
-        "d.area_uncertainty_sqm, d.evidence_score, d.validation_status "
+        "d.area_uncertainty_sqm, d.evidence_score, d.validation_status, "
+        "d.is_unanimous, d.consensus_votes "
         "FROM ai_detections d "
         "JOIN flight_assets fa ON d.flight_asset_id = fa.id "
         "JOIN flights f ON fa.flight_id = f.id "
@@ -844,6 +845,8 @@ async def get_detections_for_project(
                 "area_uncertainty_sqm": float(r[10]) if r[10] is not None else None,
                 "evidence_score": float(r[11]) if r[11] is not None else None,
                 "validation_status": r[12],
+                "is_unanimous": r[13],
+                "consensus_votes": r[14],
             },
         })
     return {

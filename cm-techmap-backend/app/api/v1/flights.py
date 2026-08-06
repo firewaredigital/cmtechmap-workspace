@@ -157,6 +157,48 @@ async def trigger_detection_validation(
     return {"status": "queued", "celery_task_id": task.id}
 
 
+@router.post("/{flight_id}/audit", status_code=202)
+async def trigger_measurement_audit(
+    project_id: uuid.UUID,
+    flight_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: dict[str, Any] = Depends(require_operador),
+):
+    """Dispara a AUTOPROVA: recomputa medições por caminho independente e
+    emite certificado bit a bit (audit_certificates)."""
+    ok = await db.execute(text(
+        "SELECT 1 FROM flights WHERE id = :fid AND project_id = :pid"
+    ), {"fid": str(flight_id), "pid": str(project_id)})
+    if not ok.fetchone():
+        raise HTTPException(status_code=404, detail="Flight not found")
+    from app.tasks.post_processing import audit_measurements
+    schema = current_tenant_schema.get() or None
+    task = audit_measurements.apply_async(
+        kwargs={"flight_id": str(flight_id), "tenant_schema": schema}
+    )
+    return {"status": "queued", "celery_task_id": task.id}
+
+
+@router.get("/{flight_id}/audit")
+async def get_latest_audit_certificate(
+    project_id: uuid.UUID,
+    flight_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: dict[str, Any] = Depends(require_viewer),
+):
+    """Último certificado de idoneidade das medições do voo."""
+    row = (await db.execute(text(
+        "SELECT id, run_at, checks_total, checks_passed, passed, details "
+        "FROM public.audit_certificates WHERE flight_id = CAST(:fid AS uuid) "
+        "ORDER BY run_at DESC LIMIT 1"
+    ), {"fid": str(flight_id)})).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Nenhuma auditoria executada ainda")
+    return {"certificate_id": str(row[0]), "run_at": row[1].isoformat(),
+            "checks_total": row[2], "checks_passed": row[3],
+            "passed": row[4], "details": row[5]}
+
+
 @router.get("/{flight_id}/assets/{asset_id}/download")
 async def download_flight_asset(
     project_id: uuid.UUID,
