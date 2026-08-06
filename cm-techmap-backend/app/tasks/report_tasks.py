@@ -43,6 +43,7 @@ def _build_fallback_narrative(project_data: dict, analytics_data: dict) -> dict[
 
 @shared_task(
     name="app.tasks.report_tasks.generate_project_report",
+    queue="reports",
     bind=True,
     max_retries=2,
     default_retry_delay=30,
@@ -311,6 +312,7 @@ def generate_project_report(
 
 @shared_task(
     name="app.tasks.report_tasks.generate_comparison_report",
+    queue="reports",
     acks_late=False,
     bind=True,
     max_retries=2,

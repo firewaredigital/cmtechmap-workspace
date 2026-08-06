@@ -11,6 +11,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+# Importar (e fixar como current_app) o Celery configurado ANTES de qualquer
+# shared_task ser usada: sem isto o produtor da API despacha com as rotas
+# padrão e a mensagem cai na fila 'celery', que nenhum worker consome — o
+# relatório ficava "pendente" até a autocura redespachar 5 min depois.
+from app.celery_app import celery_app as _celery_app  # noqa: E402,F401
+
+_celery_app.set_default()
+
 from app.api.v1.router import api_v1_router
 from app.config import get_settings
 from app.middleware.request_logging import RequestLoggingMiddleware
