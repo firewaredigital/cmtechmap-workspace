@@ -4,6 +4,7 @@ Serves raster tiles from COG orthomosaics via TiTiler and vector tiles via Marti
 Uses `flight_assets` table for asset lookups.
 """
 
+import json
 import logging
 from typing import Any
 
@@ -678,6 +679,169 @@ async def get_buildings_for_project(
         media_type="application/geo+json",
         status_code=200,
     )
+
+
+# ── DSM VISUAL (colorizado) + medições exatas ─────────────────────────────────
+# O DSM já alimentava o terreno 3D (tiles Terrarium), mas não tinha camada
+# VISUAL: o usuário baixava o TIFF e precisava do QGIS para enxergar. Estes
+# endpoints entregam o DSM colorizado por tiles (COG lossless via TiTiler,
+# reescala pelos valores REAIS do raster) e a elevação EXATA de qualquer
+# ponto clicado — o mesmo valor que o QGIS mostraria, sem arredondar.
+
+
+@router.get("/dsm/{asset_id}/visual-info")
+async def get_dsm_visual_info(
+    asset_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: dict[str, Any] = Depends(require_viewer),
+):
+    """Estatísticas exatas do DSM (min/máx/média/desvio) + bounds — base da
+    reescala visual e da legenda."""
+    asset = await _resolve_dsm_asset(asset_id, db)
+    s3_url = f"s3://{asset['bucket_name']}/{asset['file_key']}"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            stats_resp = await client.get(
+                f"{settings.titiler_url}/cog/statistics", params={"url": s3_url}
+            )
+            stats_resp.raise_for_status()
+            stats = stats_resp.json()
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"TiTiler indisponível: {e}")
+
+    band = stats.get("b1") or next(iter(stats.values()), {})
+    return {
+        "asset_id": asset["id"],
+        "resolution_cm": asset["resolution_cm"],
+        "bounds": {
+            "west": asset["bbox_min_lon"], "south": asset["bbox_min_lat"],
+            "east": asset["bbox_max_lon"], "north": asset["bbox_max_lat"],
+        },
+        # Valores EXATOS do raster — sem arredondamento no servidor
+        "elevation": {
+            "min_m": band.get("min"),
+            "max_m": band.get("max"),
+            "mean_m": band.get("mean"),
+            "std_m": band.get("std"),
+            "percentile_2": band.get("percentile_2"),
+            "percentile_98": band.get("percentile_98"),
+        },
+    }
+
+
+@router.get("/dsm/{asset_id}/visual/{z}/{x}/{y}.png")
+async def get_dsm_visual_tile(
+    asset_id: str,
+    z: int,
+    x: int,
+    y: int,
+    rescale: str,
+    colormap: str = "terrain",
+    db: AsyncSession = Depends(get_db),
+    user: dict[str, Any] = Depends(require_viewer),
+):
+    """Tile visual do DSM colorizado. `rescale=min,max` vem do visual-info —
+    a MESMA faixa vira legenda na tela, então cor e valor ficam consistentes."""
+    asset = await _resolve_dsm_asset(asset_id, db)
+    s3_url = f"s3://{asset['bucket_name']}/{asset['file_key']}"
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(
+                f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}",
+                params={"url": s3_url, "rescale": rescale, "colormap_name": colormap},
+            )
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"TiTiler error: {e}")
+    if resp.status_code == 200:
+        return Response(
+            content=resp.content,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    if resp.status_code in (404, 204):
+        raise HTTPException(status_code=204)
+    raise HTTPException(status_code=resp.status_code)
+
+
+@router.get("/dsm/{asset_id}/point")
+async def get_dsm_point_elevation(
+    asset_id: str,
+    lon: float,
+    lat: float,
+    db: AsyncSession = Depends(get_db),
+    user: dict[str, Any] = Depends(require_viewer),
+):
+    """Elevação EXATA no ponto clicado — leitura do pixel do COG via TiTiler,
+    valor bruto do raster (o mesmo que o QGIS mostra), sem arredondamento."""
+    asset = await _resolve_dsm_asset(asset_id, db)
+    s3_url = f"s3://{asset['bucket_name']}/{asset['file_key']}"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{settings.titiler_url}/cog/point/{lon},{lat}", params={"url": s3_url}
+            )
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"TiTiler error: {e}")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=404, detail="Ponto fora da cobertura do DSM")
+    data = resp.json()
+    values = data.get("values") or []
+    if not values or values[0] is None:
+        raise HTTPException(status_code=404, detail="Sem dado de elevação neste ponto")
+    return {
+        "lon": lon,
+        "lat": lat,
+        "elevation_m": values[0],
+        "asset_id": asset["id"],
+        "resolution_cm": asset["resolution_cm"],
+    }
+
+
+# ── Detecções da IA com medições exatas (fonte: banco, mesma da malha fina) ──
+
+
+@router.get("/detections/by-project/{project_id}")
+async def get_detections_for_project(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: dict[str, Any] = Depends(require_viewer),
+):
+    """
+    GeoJSON das detecções de edificação da IA para o projeto, com as MESMAS
+    medições que alimentam a análise fiscal: area_sqm, height_m, confidence e
+    model_version saem direto de ai_detections — o que o mapa mostra é
+    exatamente o que o banco guarda, sem recálculo no caminho.
+    """
+    rows = (await db.execute(text(
+        "SELECT d.id, ST_AsGeoJSON(d.polygon), d.area_sqm, d.height_m, "
+        "d.confidence, d.model_version, d.detection_class "
+        "FROM ai_detections d "
+        "JOIN flight_assets fa ON d.flight_asset_id = fa.id "
+        "JOIN flights f ON fa.flight_id = f.id "
+        "WHERE f.project_id = CAST(:pid AS uuid) AND fa.is_active "
+        "AND d.polygon IS NOT NULL "
+        "ORDER BY d.area_sqm DESC"
+    ), {"pid": project_id})).fetchall()
+
+    features = []
+    for r in rows:
+        features.append({
+            "type": "Feature",
+            "geometry": json.loads(r[1]),
+            "properties": {
+                "detection_id": str(r[0]),
+                "area_sqm": float(r[2]) if r[2] is not None else None,
+                "height_m": float(r[3]) if r[3] is not None else None,
+                "confidence": float(r[4]) if r[4] is not None else None,
+                "model_version": r[5],
+                "detection_class": r[6],
+            },
+        })
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "properties": {"total": len(features), "project_id": project_id},
+    }
 
 
 # ── Martin (Vector Tiles) ─────────────────────────────────────────────────────
