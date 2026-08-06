@@ -568,6 +568,111 @@ def generate_dsm_and_buildings(
 
 
 @shared_task(
+    name="app.tasks.post_processing.validate_detections_elevation",
+    bind=True,
+    max_retries=1,
+    queue="processing",
+    time_limit=1800,
+)
+def validate_detections_elevation(
+    self,
+    flight_id: str,
+    tenant_schema: str | None = None,
+):
+    """
+    Validação cruzada IA×fotogrametria de TODAS as detecções ativas do voo:
+    baixa DSM/DTM publicados, mede altura/volume/planaridade por polígono e
+    grava veredito + incertezas — a análise passa a citar números MEDIDOS.
+    """
+    import json as _json
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    from sqlalchemy import create_engine as _ce
+    from sqlalchemy import text as _sa
+
+    from app.core.detection_validation import validate_detections_against_elevation
+    from app.core.storage import get_minio_client
+
+    work = _tempfile.mkdtemp(prefix="cm_val_")
+    try:
+        eng = _ce(settings.database_url_sync)
+        try:
+            with eng.connect() as conn:
+                _apply_tenant_search_path(conn, tenant_schema)
+                assets = conn.execute(_sa(
+                    "SELECT asset_type, file_key, bucket_name FROM flight_assets "
+                    "WHERE flight_id = CAST(:fid AS uuid) AND is_active "
+                    "AND asset_type IN ('dsm','dtm')"
+                ), {"fid": flight_id}).fetchall()
+                paths = {}
+                client = get_minio_client()
+                for atype, key, bucket in assets:
+                    local = _os.path.join(work, f"{atype}.tif")
+                    client.fget_object(bucket or "elevation-models", key, local)
+                    paths[atype] = local
+                if "dsm" not in paths:
+                    logger.warning(f"[VALIDATE] voo {flight_id} sem DSM — nada a validar")
+                    return {"status": "no_dsm", "flight_id": flight_id}
+
+                rows = conn.execute(_sa(
+                    "SELECT d.id, ST_AsGeoJSON(d.polygon) FROM ai_detections d "
+                    "JOIN flight_assets fa ON d.flight_asset_id = fa.id "
+                    "WHERE fa.flight_id = CAST(:fid AS uuid) AND fa.is_active "
+                    "AND d.polygon IS NOT NULL"
+                ), {"fid": flight_id}).fetchall()
+                dets = [{"id": str(r[0]), "geometry": _json.loads(r[1])} for r in rows]
+                if not dets:
+                    return {"status": "no_detections", "flight_id": flight_id}
+
+                results = validate_detections_against_elevation(
+                    paths["dsm"], paths.get("dtm"), dets
+                )
+
+                updated = 0
+                for r in results:
+                    if r.get("validation_status") in ("no_data", "error"):
+                        conn.execute(_sa(
+                            "UPDATE ai_detections SET validation_status = :st, "
+                            "validated_at = now() WHERE id = CAST(:id AS uuid)"
+                        ), {"st": r["validation_status"], "id": r["id"]})
+                        continue
+                    conn.execute(_sa(
+                        "UPDATE ai_detections SET "
+                        "height_measured_m = :h, height_std_m = :hs, "
+                        "volume_m3 = :v, area_uncertainty_sqm = :au, "
+                        "planarity = :pl, evidence_score = :ev, "
+                        "validation_status = :st, validated_at = now() "
+                        "WHERE id = CAST(:id AS uuid)"
+                    ), {
+                        "h": r["height_measured_m"], "hs": r["height_std_m"],
+                        "v": r["volume_m3"], "au": r["area_uncertainty_m2"],
+                        "pl": r["planarity"], "ev": r["evidence_score"],
+                        "st": r["validation_status"], "id": r["id"],
+                    })
+                    updated += 1
+                conn.commit()
+                summary = {
+                    "status": "completed",
+                    "flight_id": flight_id,
+                    "validated": updated,
+                    "confirmed": sum(1 for r in results if r.get("validation_status") == "confirmed"),
+                    "weak": sum(1 for r in results if r.get("validation_status") == "weak"),
+                    "contradicted": sum(1 for r in results if r.get("validation_status") == "contradicted"),
+                }
+                logger.info(f"[VALIDATE] {summary}")
+                return summary
+        finally:
+            eng.dispose()
+    except Exception as exc:
+        logger.error(f"[VALIDATE] Falha: {exc}")
+        raise self.retry(exc=exc)
+    finally:
+        _shutil.rmtree(work, ignore_errors=True)
+
+
+@shared_task(
     name="app.tasks.post_processing.extract_buildings_from_real_dsm",
     bind=True,
     queue="processing",
@@ -760,6 +865,16 @@ def extract_buildings_from_real_dsm(
                     logger.info(
                         f"[REAL-DSM-BUILDINGS] {detections_written} detecções gravadas"
                     )
+                    if detections_written and flight_id:
+                        # Validação cruzada IA×fotogrametria: mede altura/
+                        # volume/planaridade de cada polígono e grava o
+                        # veredito — roda em background, não atrasa o voo.
+                        validate_detections_elevation.apply_async(
+                            kwargs={"flight_id": flight_id,
+                                    "tenant_schema": tenant_schema},
+                            countdown=5,
+                        )
+                        logger.info("[REAL-DSM-BUILDINGS] validação por elevação enfileirada")
                 else:
                     logger.warning(
                         "[REAL-DSM-BUILDINGS] Voo sem ortomosaico registrado — "

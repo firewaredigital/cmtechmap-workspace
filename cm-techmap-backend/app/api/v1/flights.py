@@ -131,6 +131,32 @@ async def get_flight_assets(
     )
 
 
+@router.post("/{flight_id}/validate-detections", status_code=202)
+async def trigger_detection_validation(
+    project_id: uuid.UUID,
+    flight_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: dict[str, Any] = Depends(require_operador),
+):
+    """
+    Dispara a validação cruzada IA×fotogrametria das detecções do voo:
+    mede altura/volume/planaridade por polígono nos DSM/DTM publicados e
+    grava veredito + incertezas em cada detecção.
+    """
+    flight = await db.execute(text(
+        "SELECT 1 FROM flights WHERE id = :fid AND project_id = :pid"
+    ), {"fid": str(flight_id), "pid": str(project_id)})
+    if not flight.fetchone():
+        raise HTTPException(status_code=404, detail="Flight not found")
+
+    from app.tasks.post_processing import validate_detections_elevation
+    schema = current_tenant_schema.get() or None
+    task = validate_detections_elevation.apply_async(
+        kwargs={"flight_id": str(flight_id), "tenant_schema": schema}
+    )
+    return {"status": "queued", "celery_task_id": task.id}
+
+
 @router.get("/{flight_id}/assets/{asset_id}/download")
 async def download_flight_asset(
     project_id: uuid.UUID,

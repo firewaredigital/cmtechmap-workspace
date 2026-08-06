@@ -102,6 +102,7 @@ def extract_buildings_ml(
     import onnxruntime as ort
     import rasterio
     from rasterio import features as rio_features
+    from rasterio.warp import transform_geom
     from shapely.geometry import mapping, shape
 
     sess = ort.InferenceSession(
@@ -194,9 +195,16 @@ def extract_buildings_ml(
                 height = float(np.nanmean(hwin[window_mask]) - base_elevation)
                 height = max(0.0, round(height, 1))
 
+        # GeoJSON é POR DEFINIÇÃO WGS84: raster projetado (UTM) precisa de
+        # reprojeção explícita — sem ela, metros entravam na coluna 4326 e
+        # as marcações caíam fora do mundo (nunca apareciam no mapa).
+        geom_out = mapping(simplified)
+        if crs and crs.is_projected:
+            geom_out = transform_geom(crs.to_string(), "EPSG:4326", geom_out)
+
         features.append({
             "type": "Feature",
-            "geometry": mapping(simplified),
+            "geometry": geom_out,
             "properties": {
                 "area_m2": round(area_m2, 1),
                 "confidence": round(conf, 3),

@@ -814,7 +814,9 @@ async def get_detections_for_project(
     """
     rows = (await db.execute(text(
         "SELECT d.id, ST_AsGeoJSON(d.polygon), d.area_sqm, d.height_m, "
-        "d.confidence, d.model_version, d.detection_class "
+        "d.confidence, d.model_version, d.detection_class, "
+        "d.height_measured_m, d.height_std_m, d.volume_m3, "
+        "d.area_uncertainty_sqm, d.evidence_score, d.validation_status "
         "FROM ai_detections d "
         "JOIN flight_assets fa ON d.flight_asset_id = fa.id "
         "JOIN flights f ON fa.flight_id = f.id "
@@ -835,6 +837,13 @@ async def get_detections_for_project(
                 "confidence": float(r[4]) if r[4] is not None else None,
                 "model_version": r[5],
                 "detection_class": r[6],
+                # Medições fotogramétricas + veredito da validação cruzada
+                "height_measured_m": float(r[7]) if r[7] is not None else None,
+                "height_std_m": float(r[8]) if r[8] is not None else None,
+                "volume_m3": float(r[9]) if r[9] is not None else None,
+                "area_uncertainty_sqm": float(r[10]) if r[10] is not None else None,
+                "evidence_score": float(r[11]) if r[11] is not None else None,
+                "validation_status": r[12],
             },
         })
     return {
