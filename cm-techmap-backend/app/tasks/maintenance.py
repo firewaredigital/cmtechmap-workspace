@@ -223,3 +223,57 @@ def metrics_snapshot():
             return metrics
     finally:
         engine.dispose()
+
+@celery_app.task(name="app.tasks.maintenance.requeue_stuck_reports")
+def requeue_stuck_reports(max_age_minutes: int = 10) -> dict:
+    """
+    AUTOCURA: relatório 'pending' há mais de N minutos sem tarefa viva é
+    redespachado. Cobre worker substituído em atualização, queda de
+    container e mensagem perdida — o gestor nunca fica com "pendente"
+    eterno sem saber por quê.
+    """
+    from sqlalchemy import create_engine, text as sa_text
+
+    from app.celery_app import celery_app as _app
+
+    settings = get_settings()
+    engine = create_engine(settings.database_url_sync)
+    requeued, checked = 0, 0
+    try:
+        insp = _app.control.inspect(timeout=3)
+        live = set()
+        for group in (insp.active() or {}, insp.reserved() or {}, insp.scheduled() or {}):
+            for tasks in group.values():
+                for t in tasks:
+                    tid = t.get("id") if isinstance(t, dict) else None
+                    if tid:
+                        live.add(tid)
+        with engine.connect() as conn:
+            rows = conn.execute(sa_text(
+                "SELECT id, project_id, report_type, output_format, celery_task_id "
+                "FROM public.reports WHERE status = 'pending' "
+                "AND created_at < now() - make_interval(mins => :age)"
+            ), {"age": max_age_minutes}).fetchall()
+            checked = len(rows)
+            from app.tasks.report_tasks import generate_project_report
+            for rid, pid, rtype, fmt, ctid in rows:
+                if ctid and str(ctid) in live:
+                    continue  # está rodando de verdade — não duplicar
+                task = generate_project_report.apply_async(kwargs={
+                    "report_id": str(rid), "project_id": str(pid),
+                    "report_type": rtype or "project_summary",
+                    "output_format": fmt or "pdf",
+                    "report_config": None, "tenant_schema": None,
+                })
+                conn.execute(sa_text(
+                    "UPDATE public.reports SET celery_task_id = :t WHERE id = :id"
+                ), {"t": task.id, "id": rid})
+                requeued += 1
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"[MAINT] requeue_stuck_reports: {e}")
+    finally:
+        engine.dispose()
+    if requeued:
+        logger.info(f"[MAINT] {requeued} relatório(s) órfão(s) redespachado(s) de {checked}")
+    return {"checked": checked, "requeued": requeued}

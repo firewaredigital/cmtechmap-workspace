@@ -241,9 +241,26 @@ class IPTUMalhaFinaService:
 
         # ── Step 6: Update analysis_run with results ──────────────────────
         elapsed = (datetime.now(UTC) - start_time).total_seconds()
+        # COBERTURA DECLARADA: a análise só audita lotes DENTRO da área
+        # sobrevoada (auditar lote sem imagem seria fabricar veredito). Sem
+        # dizer isso, o gestor lê "142 discrepâncias" achando que o município
+        # inteiro foi varrido. O número de lotes do cadastro entra no
+        # resumo para que a cobertura seja explícita, nunca implícita.
+        cadastre_total = (await session.execute(
+            text("SELECT count(*) FROM parcels")
+        )).scalar() or 0
+        coverage_pct = round(100.0 * len(parcels) / cadastre_total, 2) if cadastre_total else 0.0
+
         summary = {
             "total_detections": len(detections),
             "total_parcels": len(parcels),
+            "parcels_in_cadastre": cadastre_total,
+            "parcels_outside_survey": max(0, cadastre_total - len(parcels)),
+            "cadastre_coverage_pct": coverage_pct,
+            "coverage_note": (
+                f"Auditados {len(parcels)} de {cadastre_total} lotes do cadastro "
+                f"({coverage_pct}%) — apenas os cobertos por este levantamento aéreo."
+            ),
             "matched_buildings": len(matched_detections),
             "unregistered_buildings": len(detections) - len(matched_detections),
             "total_discrepancies": len(discrepancies),

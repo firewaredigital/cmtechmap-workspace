@@ -248,11 +248,62 @@ services:
       celery -A app.celery_app worker
         --loglevel=info
         --concurrency=${CELERY_CONCURRENCY:-2}
-        --queues=default,processing,reports,ai_llm
+        --queues=processing,ai_llm
         --max-tasks-per-child=50
         --prefetch-multiplier=1
         -O fair
         -n worker@%h
+    environment:
+      - APP_ENV=staging
+      - APP_SECRET_KEY=${APP_SECRET_KEY}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cm_techmap}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cm_techmap}
+      - DATABASE_URL_SYNC=postgresql+psycopg2://${POSTGRES_USER:-cm_techmap}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cm_techmap}
+      - DATABASE_URL_DIRECT=postgresql+asyncpg://${POSTGRES_USER:-cm_techmap}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cm_techmap}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-cm_techmap}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      - MINIO_USE_SSL=false
+      - KEYCLOAK_SERVER_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-cm-techmap}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-cm-techmap-api}
+      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
+      - TITILER_URL=http://titiler:80
+      - MARTIN_URL=http://martin:3000
+      - NODEODM_HOST=nodeodm
+      - NODEODM_PORT=3000
+      - GROQ_ENABLED=${GROQ_ENABLED:-false}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+    depends_on:
+      backend: {condition: service_started}
+      redis: {condition: service_healthy}
+    networks: [cm-local-network]
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Celery Beat — agendador (backups, limpezas, health-check de tenants)
+  # ────────────────────────────────────────────────────────────────────────────
+  # Worker LEVE dedicado a relatórios e tarefas curtas.
+  # Sem ele, um PDF fica preso atrás de fotogrametria/adjudicação (tarefas
+  # de minutos) — provado na campanha E2E: relatório enfileirado às 20:03
+  # seguia "pending" porque as duas vagas do worker estavam ocupadas.
+  celery-worker-light:
+    image: cm-techmap-local-backend
+    container_name: cml-celery-worker-light
+    restart: unless-stopped
+    logging: *cml-logging
+    volumes:
+      - ai_models:/models
+    command: >
+      celery -A app.celery_app worker
+        --loglevel=info
+        --concurrency=${CELERY_LIGHT_CONCURRENCY:-2}
+        --queues=default,reports
+        --max-tasks-per-child=50
+        --prefetch-multiplier=1
+        -O fair
+        -n worker-light@%h
     environment:
       - APP_ENV=staging
       - APP_SECRET_KEY=${APP_SECRET_KEY}

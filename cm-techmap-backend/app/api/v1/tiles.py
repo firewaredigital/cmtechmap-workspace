@@ -25,6 +25,16 @@ logger = logging.getLogger(__name__)
 
 # ── Helper ────────────────────────────────────────────────────────────────────
 
+def _valid_uuid(value: str) -> str:
+    """UUID malformado na URL não pode virar 500 — vira 404 explícito."""
+    import uuid as _uuid
+
+    try:
+        return str(_uuid.UUID(str(value)))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=404, detail="Identificador de asset inválido")
+
+
 async def _resolve_asset(
     asset_id: str, db: AsyncSession
 ) -> dict[str, Any]:
@@ -33,6 +43,7 @@ async def _resolve_asset(
     Falls back to searching by file_key if UUID lookup fails.
     """
     # Try UUID lookup first
+    asset_id = _valid_uuid(asset_id)
     result = await db.execute(text(
         "SELECT id, file_key, bucket_name, resolution_cm, "
         "crs_epsg, bbox_min_lon, bbox_min_lat, bbox_max_lon, bbox_max_lat, "
@@ -327,6 +338,7 @@ async def _resolve_dsm_asset(
     asset_id: str, db: AsyncSession
 ) -> dict[str, Any]:
     """Look up a DSM/DTM flight_asset by ID."""
+    asset_id = _valid_uuid(asset_id)
     result = await db.execute(text(
         "SELECT id, file_key, bucket_name, resolution_cm, "
         "crs_epsg, bbox_min_lon, bbox_min_lat, bbox_max_lon, bbox_max_lat, "
@@ -786,8 +798,24 @@ async def get_dsm_point_elevation(
         raise HTTPException(status_code=404, detail="Ponto fora da cobertura do DSM")
     data = resp.json()
     values = data.get("values") or []
-    if not values or values[0] is None:
-        raise HTTPException(status_code=404, detail="Sem dado de elevação neste ponto")
+    # Voo cobre um polígono irregular dentro do bbox: ~59% do retângulo é
+    # nodata. Distinguir "fora do voo" de "erro" evita que o operador ache
+    # que o sistema falhou ao clicar numa área não sobrevoada.
+    inside_bbox = (
+        asset["bbox_min_lon"] is not None
+        and asset["bbox_min_lon"] <= lon <= asset["bbox_max_lon"]
+        and asset["bbox_min_lat"] <= lat <= asset["bbox_max_lat"]
+    )
+    if not values or values[0] is None or values[0] == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Ponto dentro da área do projeto, mas SEM cobertura do voo "
+                "(sem dado de elevação medido aqui)."
+                if inside_bbox else
+                "Ponto fora da área coberta por este levantamento."
+            ),
+        )
     return {
         "lon": lon,
         "lat": lat,

@@ -90,6 +90,29 @@ async def import_cadastro_csv(
     errors = 0
     error_details = []
 
+    # Coluna mapeada que não existe no arquivo faz TODAS as linhas falharem
+    # com a mesma mensagem enigmática ("Código cadastral vazio"). Detectar e
+    # dizer o nome errado + os disponíveis economiza a importação inteira.
+    header = reader.fieldnames or []
+    if col_cadastral_code not in header:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"A coluna de código cadastral '{col_cadastral_code}' não existe no "
+                f"arquivo. Colunas disponíveis: {', '.join(header) or '(nenhuma)'}. "
+                f"Use o parâmetro col_cadastral_code para apontar a coluna certa."
+            ),
+        )
+    for optional_param, optional_col in (
+        ("col_geometry", col_geometry), ("col_owner", col_owner),
+        ("col_area_terreno", col_area_terreno),
+    ):
+        if optional_col and optional_col not in header:
+            logger.warning(
+                f"[IMPORT] {optional_param}='{optional_col}' não existe no arquivo — "
+                f"campo será ignorado. Disponíveis: {header}"
+            )
+
     for i, row in enumerate(reader, start=2):
         cadastral_code = (row.get(col_cadastral_code) or "").strip()
         if not cadastral_code:

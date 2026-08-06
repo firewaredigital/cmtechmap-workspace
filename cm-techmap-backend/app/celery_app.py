@@ -47,6 +47,7 @@ celery_app.conf.update(
         "app.tasks.post_processing.generate_thumbnail": {"queue": "default"},
         "app.tasks.report_tasks.generate_project_report": {"queue": "reports"},
         "app.tasks.report_tasks.generate_comparison_report": {"queue": "reports"},
+        "app.tasks.maintenance.requeue_stuck_reports": {"queue": "default"},
     },
     task_default_queue="default",
 
@@ -76,6 +77,12 @@ celery_app.conf.update(include=[
 from celery.schedules import crontab
 
 celery_app.conf.beat_schedule = {
+    "requeue-stuck-reports": {
+        "task": "app.tasks.maintenance.requeue_stuck_reports",
+        # A cada 5 min: uma atualização do sistema não pode deixar relatório
+        # preso até o visibility_timeout de 6h expirar.
+        "schedule": crontab(minute="*/5"),
+    },
     # Backup database every 6 hours
     "backup-database": {
         "task": "app.tasks.maintenance.backup_database",

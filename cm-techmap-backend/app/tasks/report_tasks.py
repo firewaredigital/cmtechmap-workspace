@@ -46,6 +46,12 @@ def _build_fallback_narrative(project_data: dict, analytics_data: dict) -> dict[
     bind=True,
     max_retries=2,
     default_retry_delay=30,
+    # acks_late=False nesta tarefa CURTA: com acks_late global + visibility
+    # de 6h (necessária para a fotogrametria), trocar o container do worker
+    # deixava o relatório invisível por 6 HORAS — o gestor via "pendente"
+    # eterno após qualquer atualização. Aqui a mensagem é confirmada ao ser
+    # pega; se o worker cair no meio, o vigia requeue_stuck_reports redespacha.
+    acks_late=False,
 )
 def generate_project_report(
     self,
@@ -305,6 +311,7 @@ def generate_project_report(
 
 @shared_task(
     name="app.tasks.report_tasks.generate_comparison_report",
+    acks_late=False,
     bind=True,
     max_retries=2,
 )

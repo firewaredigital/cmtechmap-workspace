@@ -296,6 +296,12 @@ services:
     container_name: cmo-celery-worker
     restart: always
     logging: *cm-logging
+    # Worker ÚNICO por decisão de capacidade: a VM tem ~950 MB e um segundo
+    # processo Celery (~150 MB) a colocaria em risco de OOM. A instalação
+    # local usa dois workers (pesado/leve) porque roda em máquina de
+    # desktop. Aqui a proteção contra relatório órfão vem da autocura
+    # (maintenance.requeue_stuck_reports, a cada 5 min) — a fotogrametria
+    # longa não é o caso de uso desta máquina.
     command: >
       celery -A app.celery_app worker
         --loglevel=warning
