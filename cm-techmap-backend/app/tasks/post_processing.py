@@ -87,11 +87,30 @@ def _persist_building_detections(
     if not rows:
         return 0
 
+    # Idempotência por (asset, versão do modelo) — reexecutar a MESMA versão
+    # substitui o próprio resultado.
     conn.execute(sa_text(
         "DELETE FROM ai_detections "
         "WHERE flight_asset_id = CAST(:aid AS uuid) "
         "AND detection_class = 'building' AND model_version = :model"
     ), {"aid": orthomosaic_asset_id, "model": model_version})
+
+    # E as gerações ANTERIORES do mesmo asset saem de cena: quando o detector
+    # evolui (heurística → neural → fusão), manter as antigas ativas fazia o
+    # mapa exibir duas gerações sobrepostas e a malha fina contar o mesmo
+    # imóvel duas vezes. Medido: 97 detecções obsoletas convivendo com 238
+    # novas no voo real.
+    stale = conn.execute(sa_text(
+        "DELETE FROM ai_detections "
+        "WHERE flight_asset_id = CAST(:aid AS uuid) "
+        "AND detection_class = 'building' AND model_version <> :model "
+        "RETURNING id"
+    ), {"aid": orthomosaic_asset_id, "model": model_version}).fetchall()
+    if stale:
+        logger.info(
+            f"[DETECTIONS] {len(stale)} detecção(ões) de gerações anteriores "
+            f"removida(s) — o mapa mostra apenas o resultado de {model_version}"
+        )
 
     from app.core.geometry_sql import LARGEST_POLYGON_FROM_GEOJSON
 
@@ -646,6 +665,14 @@ def adjudicate_weak_detections(self, flight_id: str, tenant_schema: str | None =
                         except Exception:
                             return None
 
+                    # COMMIT EM LOTES: a adjudicação roda inferência em
+                    # resolução nativa e leva minutos. Uma única transação
+                    # aberta o tempo todo trava a tabela inteira — medido:
+                    # um DELETE trivial ficou 7 minutos em espera de lock.
+                    # A cada 20 detecções o trabalho é firmado e os locks
+                    # liberados; se o processo cair, o que já foi julgado
+                    # está salvo.
+                    batch = 0
                     for det_id, geo in rows:
                         r = adjudicate_detection(
                             sess, inp, ortho, ndsm_win,
@@ -668,6 +695,10 @@ def adjudicate_weak_detections(self, flight_id: str, tenant_schema: str | None =
                             "validated_at = now() WHERE id = CAST(:id AS uuid)"
                         ), {"v": r.get("votes_json", "{}"), "u": r["unanimous"],
                             "st": st, "id": str(det_id)})
+                        batch += 1
+                        if batch % 20 == 0:
+                            conn.commit()
+                            logger.info(f"[ADJUDICATE] {batch}/{len(rows)} julgadas (commit parcial)")
                 conn.commit()
                 summary = {"status": "completed", "flight_id": flight_id,
                            "adjudicated": len(rows), "unanimous": unanimous,
@@ -679,6 +710,169 @@ def adjudicate_weak_detections(self, flight_id: str, tenant_schema: str | None =
     except Exception as exc:
         logger.error(f"[ADJUDICATE] Falha: {exc}")
         raise self.retry(exc=exc)
+    finally:
+        _shutil.rmtree(work, ignore_errors=True)
+
+
+@shared_task(
+    name="app.tasks.post_processing.audit_detection_coverage",
+    bind=True,
+    max_retries=0,
+    queue="processing",
+    time_limit=2400,
+)
+def audit_detection_coverage(self, flight_id: str, tenant_schema: str | None = None):
+    """
+    AUDITORIA DE COBERTURA — encontra o que a IA PULOU, sem depender de
+    ninguém olhar o mapa.
+
+    Para cada lote dentro da área do voo sem nenhuma detecção, mede a altura
+    máxima do nDSM dentro do lote. Se há estrutura elevada e nenhuma
+    detecção, é uma FALHA DE COBERTURA do modelo — e o lote entra numa lista
+    nominal, com a altura e a área elevada encontradas. Um lote realmente
+    vazio (terreno baldio) aparece separado, sem alarme falso.
+
+    É o contraditório da própria IA: o sensor 3D fiscaliza o detector 2D.
+    """
+    import json as _json
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    import numpy as _np
+    from sqlalchemy import create_engine as _ce
+    from sqlalchemy import text as _sa
+
+    from app.core.storage import get_minio_client
+
+    work = _tempfile.mkdtemp(prefix="cm_cov_")
+    try:
+        import rasterio as _rio
+        from rasterio.mask import mask as _rio_mask
+        from rasterio.warp import transform_geom as _tg
+
+        eng = _ce(settings.database_url_sync)
+        try:
+            with eng.connect() as conn:
+                _apply_tenant_search_path(conn, tenant_schema)
+                dsm = conn.execute(_sa(
+                    "SELECT file_key, COALESCE(bucket_name,'elevation-models') "
+                    "FROM flight_assets WHERE flight_id = CAST(:fid AS uuid) "
+                    "AND is_active AND asset_type = 'dsm' LIMIT 1"
+                ), {"fid": flight_id}).fetchone()
+                if not dsm:
+                    return {"status": "no_dsm"}
+                local = _os.path.join(work, "dsm.tif")
+                get_minio_client().fget_object(dsm[1], dsm[0], local)
+
+                # A ortofoto entra para a auditoria distinguir ESTRUTURA de
+                # ÁRVORE. Sem isso, uma copa de 4 m vira "falha de cobertura"
+                # e o operador persegue um alarme falso — medido: o único
+                # caso restante do voo real tinha 97% de pixels verdes.
+                local_ortho = None
+                ortho = conn.execute(_sa(
+                    "SELECT file_key, COALESCE(bucket_name,'orthomosaics') "
+                    "FROM flight_assets WHERE flight_id = CAST(:fid AS uuid) "
+                    "AND is_active AND asset_type = 'orthomosaic' LIMIT 1"
+                ), {"fid": flight_id}).fetchone()
+                if ortho:
+                    local_ortho = _os.path.join(work, "ortho.tif")
+                    get_minio_client().fget_object(ortho[1], ortho[0], local_ortho)
+
+                # Lotes na área do voo SEM nenhuma detecção
+                rows = conn.execute(_sa("""
+                    WITH voo AS (
+                      SELECT ST_MakeEnvelope(min(bbox_min_lon), min(bbox_min_lat),
+                                             max(bbox_max_lon), max(bbox_max_lat), 4326) g
+                      FROM flight_assets WHERE flight_id = CAST(:fid AS uuid) AND is_active
+                    )
+                    SELECT p.id, p.cadastral_code, ST_AsGeoJSON(p.polygon)
+                    FROM parcels p, voo
+                    WHERE p.polygon IS NOT NULL AND ST_Intersects(p.polygon, voo.g)
+                      AND NOT EXISTS (
+                        SELECT 1 FROM ai_detections d
+                        JOIN flight_assets fa ON d.flight_asset_id = fa.id
+                        WHERE fa.flight_id = CAST(:fid AS uuid)
+                          AND d.polygon IS NOT NULL
+                          AND ST_Intersects(d.polygon, p.polygon))
+                """), {"fid": flight_id}).fetchall()
+
+                misses, empty, no_cover, vegetation = [], [], [], []
+                import cv2 as _cv2
+                ortho_ds = _rio.open(local_ortho) if local_ortho else None
+                with _rio.open(local) as d:
+                    px_area = abs(d.transform.a * d.transform.e)
+                    for pid, code, geo in rows:
+                        try:
+                            gn = _tg("EPSG:4326", d.crs.to_string(), _json.loads(geo))
+                            win, _tr = _rio_mask(d, [gn], crop=True, filled=False)
+                            vals = win[0].compressed().astype("float64")
+                            vals = vals[_np.isfinite(vals)]
+                        except Exception:
+                            no_cover.append({"parcel_id": str(pid), "code": code})
+                            continue
+                        if vals.size == 0:
+                            no_cover.append({"parcel_id": str(pid), "code": code})
+                            continue
+                        elevated = vals[vals >= 1.5]  # 1,5 m: acima de muro/carro
+                        elevated_area = float(elevated.size * px_area)
+                        item = {
+                            "parcel_id": str(pid), "code": code,
+                            "max_height_m": round(float(vals.max()), 2),
+                            "elevated_area_m2": round(elevated_area, 1),
+                            "pixels_measured": int(vals.size),
+                        }
+                        if not (elevated_area >= 3.0 and float(vals.max()) >= 1.5):
+                            empty.append(item)
+                            continue
+
+                        # Massa elevada existe. É telhado ou copa? O mesmo
+                        # critério do detector decide, para a auditoria não
+                        # acusar a IA de perder uma árvore.
+                        green_pct = None
+                        if ortho_ds is not None:
+                            try:
+                                gn2 = _tg("EPSG:4326", ortho_ds.crs.to_string(), _json.loads(geo))
+                                rgbw, _t2 = _rio_mask(ortho_ds, [gn2], crop=True, filled=True, nodata=0)
+                                rgb = rgbw[:3].astype("float32")
+                                tot = _np.maximum(rgb.sum(axis=0), 1e-6)
+                                exg = 2 * (rgb[1] / tot) - (rgb[0] / tot) - (rgb[2] / tot)
+                                hmask = _np.ma.filled(win[0], 0).astype("float32") >= 1.5
+                                hh = min(hmask.shape[0], exg.shape[0])
+                                ww = min(hmask.shape[1], exg.shape[1])
+                                sel = hmask[:hh, :ww]
+                                if sel.any():
+                                    green_pct = round(float((exg[:hh, :ww][sel] > 0.16).mean()) * 100, 1)
+                            except Exception:
+                                green_pct = None
+                        item["green_pct"] = green_pct
+                        if green_pct is not None and green_pct >= 50.0:
+                            vegetation.append(item)   # copa de árvore: exclusão CORRETA
+                        else:
+                            misses.append(item)       # estrutura real não detectada
+
+                if ortho_ds is not None:
+                    ortho_ds.close()
+                misses.sort(key=lambda m: -m["elevated_area_m2"])
+                summary = {
+                    "status": "completed",
+                    "flight_id": flight_id,
+                    "parcels_without_detection": len(rows),
+                    "coverage_misses": len(misses),
+                    "vegetation_only": len(vegetation),
+                    "genuinely_empty": len(empty),
+                    "outside_dsm_coverage": len(no_cover),
+                    "perfect_coverage": len(misses) == 0,
+                    "worst_misses": misses[:20],
+                }
+                logger.info(
+                    f"[COVERAGE] {len(rows)} lotes sem detecção: {len(misses)} com "
+                    f"ESTRUTURA não detectada, {len(vegetation)} só vegetação, "
+                    f"{len(empty)} vazios, {len(no_cover)} fora da cobertura do voo"
+                )
+                return summary
+        finally:
+            eng.dispose()
     finally:
         _shutil.rmtree(work, ignore_errors=True)
 
@@ -993,19 +1187,76 @@ def extract_buildings_from_real_dsm(
 
                 from app.core.ml_building_detector import (
                     estimate_ground_elevation,
+                    extract_buildings_exhaustive,
                     extract_buildings_ml,
                 )
 
                 base_elev = estimate_ground_elevation(local_dsm)
-                extract_buildings_ml(
-                    orthophoto_path=local_ortho,
-                    output_path=footprints_path,
-                    dsm_path=local_dsm,
-                    base_elevation=base_elev,
-                    model_path=settings.ai_model_path,
-                    model_url=settings.ai_model_url,
-                )
-                detector_model_version = "geobase_onnx_v1"
+                if settings.ai_exhaustive:
+                    extract_buildings_exhaustive(
+                        orthophoto_path=local_ortho,
+                        output_path=footprints_path,
+                        dsm_path=local_dsm,
+                        base_elevation=base_elev,
+                        threshold=settings.ai_threshold,
+                        min_area_m2=settings.ai_min_area_m2,
+                        model_path=settings.ai_model_path,
+                        model_url=settings.ai_model_url,
+                    )
+                    detector_model_version = "geobase_onnx_exhaustive_v1"
+
+                    # FUSÃO COM A GEOMETRIA: a rede não dispara em todo
+                    # telhado, mas volume acima do solo existe independente de
+                    # reconhecimento. O que a geometria vê e a rede não viu
+                    # deixa de sumir do mapa — e a origem fica gravada em cada
+                    # polígono (neural | elevation | both).
+                    try:
+                        import json as _js
+
+                        from app.core.structure_detector_3d import (
+                            detect_structures_from_elevation,
+                            fuse_detections,
+                        )
+
+                        elev_path = os.path.join(work_dir, "structures_3d.geojson")
+                        detect_structures_from_elevation(
+                            dsm_path=local_dsm,
+                            output_path=elev_path,
+                            orthophoto_path=local_ortho,
+                            min_height_m=settings.ai_min_structure_height_m,
+                            min_area_m2=settings.ai_min_area_m2,
+                        )
+                        with open(footprints_path, encoding="utf-8") as _f:
+                            neural_fc = _js.load(_f)
+                        with open(elev_path, encoding="utf-8") as _f:
+                            elev_fc = _js.load(_f)
+                        fused = fuse_detections(
+                            neural_fc.get("features", []), elev_fc.get("features", [])
+                        )
+                        neural_fc["features"] = fused
+                        neural_fc.setdefault("properties", {}).update({
+                            "fusion": True,
+                            "total_buildings": len(fused),
+                            "from_elevation_only": sum(
+                                1 for f in fused
+                                if (f.get("properties") or {}).get("detection_source") == "elevation"
+                            ),
+                        })
+                        with open(footprints_path, "w", encoding="utf-8") as _f:
+                            _js.dump(neural_fc, _f)
+                        detector_model_version = "fusion_rgb3d_v1"
+                    except Exception as _e:
+                        logger.exception(f"[FUSÃO] falhou, seguindo só com a rede: {_e}")
+                else:
+                    extract_buildings_ml(
+                        orthophoto_path=local_ortho,
+                        output_path=footprints_path,
+                        dsm_path=local_dsm,
+                        base_elevation=base_elev,
+                        model_path=settings.ai_model_path,
+                        model_url=settings.ai_model_url,
+                    )
+                    detector_model_version = "geobase_onnx_v1"
                 logger.info(
                     f"[REAL-DSM-BUILDINGS] Detecção neural sobre o ortomosaico "
                     f"(solo estimado em {base_elev:.1f} m)"

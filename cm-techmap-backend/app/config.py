@@ -90,6 +90,15 @@ class Settings(BaseSettings):
     # ── Detector de edificações ──────────────────────────────────────────────
     # "ml" = rede neural ONNX (padrão); "heuristic" = cor+altura (contingência)
     ai_detector: str = "ml"
+    # Varredura exaustiva (resolução nativa + janelas sobrepostas + TTA).
+    # Custa mais CPU e encontra o que a versão reduzida pulava — o veto do
+    # 3D a jusante impede que o recall maior vire lixo na malha fina.
+    ai_exhaustive: bool = True
+    ai_threshold: float = 0.35
+    ai_min_area_m2: float = 3.0
+    # Altura mínima para a geometria considerar 'estrutura': 1,5 m fica
+    # acima de muro, carro e entulho, e abaixo de qualquer edificação.
+    ai_min_structure_height_m: float = 1.5
     ai_model_path: str = "/models/building_segmentation.onnx"
     ai_model_url: str = (
         "https://huggingface.co/geobase/building-footprint-segmentation"
