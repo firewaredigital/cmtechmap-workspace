@@ -1082,12 +1082,17 @@ async def get_detections_for_project(
         "d.confidence, d.model_version, d.detection_class, "
         "d.height_measured_m, d.height_std_m, d.volume_m3, "
         "d.area_uncertainty_sqm, d.evidence_score, d.validation_status, "
-        "d.is_unanimous, d.consensus_votes "
+        "d.is_unanimous, d.consensus_votes, "
+        "d.roof_type, d.roof_design, d.roof_waters, d.roof_type_confidence, "
+        "d.roof_material, d.roof_material_confidence, d.roof_slope_pct, "
+        "d.roof_slope_deg, d.area_projected_sqm, d.area_real_sqm, d.area_gain_pct "
         "FROM ai_detections d "
         "JOIN flight_assets fa ON d.flight_asset_id = fa.id "
         "JOIN flights f ON fa.flight_id = f.id "
         "WHERE f.project_id = CAST(:pid AS uuid) AND fa.is_active "
         "AND d.polygon IS NOT NULL "
+        # Sombra não é imóvel: sai do mapa, da contagem e da malha fina.
+        "AND COALESCE(d.shadow_rejected, FALSE) = FALSE "
         "ORDER BY d.area_sqm DESC"
     ), {"pid": project_id})).fetchall()
 
@@ -1112,6 +1117,18 @@ async def get_detections_for_project(
                 "validation_status": r[12],
                 "is_unanimous": r[13],
                 "consensus_votes": r[14],
+                # Tipologia e material do telhado + as DUAS áreas
+                "roof_type": r[15],
+                "roof_design": r[16],
+                "roof_waters": r[17],
+                "roof_type_confidence": float(r[18]) if r[18] is not None else None,
+                "roof_material": r[19],
+                "roof_material_confidence": float(r[20]) if r[20] is not None else None,
+                "roof_slope_pct": float(r[21]) if r[21] is not None else None,
+                "roof_slope_deg": float(r[22]) if r[22] is not None else None,
+                "area_projected_sqm": float(r[23]) if r[23] is not None else None,
+                "area_real_sqm": float(r[24]) if r[24] is not None else None,
+                "area_gain_pct": float(r[25]) if r[25] is not None else None,
             },
         })
     return {

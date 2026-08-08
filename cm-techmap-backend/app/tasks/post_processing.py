@@ -715,6 +715,212 @@ def adjudicate_weak_detections(self, flight_id: str, tenant_schema: str | None =
 
 
 @shared_task(
+    name="app.tasks.post_processing.analyze_roofs",
+    bind=True,
+    max_retries=1,
+    queue="processing",
+    time_limit=5400,
+)
+def analyze_roofs(self, flight_id: str, tenant_schema: str | None = None):
+    """
+    Lê CADA telhado detectado: rejeita sombra, classifica tipologia (águas)
+    e material, mede inclinação e a ÁREA REAL da cobertura.
+
+    A sombra é o falso positivo mais teimoso — tem a forma de um telhado
+    visto de cima e a rede dispara nela. O que a desmascara é a física:
+    escura E rasteira. Aqui ela é marcada (shadow_rejected) e some do mapa,
+    da contagem e da malha fina.
+    """
+    import json as _json
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    import numpy as _np
+    from sqlalchemy import create_engine as _ce
+    from sqlalchemy import text as _sa
+
+    from app.core.roof_analyzer import analyze_roof
+    from app.core.storage import get_minio_client
+
+    work = _tempfile.mkdtemp(prefix="cm_roof_")
+    try:
+        import rasterio as _rio
+        from rasterio.mask import mask as _rio_mask
+        from rasterio.warp import transform_geom as _tg
+
+        eng = _ce(settings.database_url_sync)
+        try:
+            with eng.connect() as conn:
+                _apply_tenant_search_path(conn, tenant_schema)
+                assets = {}
+                for atype, default_bucket in (("orthomosaic", "orthomosaics"), ("dsm", "elevation-models")):
+                    row = conn.execute(_sa(
+                        "SELECT file_key, COALESCE(bucket_name, :db) FROM flight_assets "
+                        "WHERE flight_id = CAST(:fid AS uuid) AND is_active "
+                        "AND asset_type = :t LIMIT 1"
+                    ), {"fid": flight_id, "t": atype, "db": default_bucket}).fetchone()
+                    if not row:
+                        return {"status": f"missing_{atype}"}
+                    local = _os.path.join(work, f"{atype}.tif")
+                    get_minio_client().fget_object(row[1], row[0], local)
+                    assets[atype] = local
+
+                rows = conn.execute(_sa(
+                    "SELECT d.id, ST_AsGeoJSON(d.polygon) FROM ai_detections d "
+                    "JOIN flight_assets fa ON d.flight_asset_id = fa.id "
+                    "WHERE fa.flight_id = CAST(:fid AS uuid) AND fa.is_active "
+                    "AND d.polygon IS NOT NULL"
+                ), {"fid": flight_id}).fetchall()
+                if not rows:
+                    return {"status": "no_detections"}
+
+                # PASSO 1 — calibração do voo: uma amostra de telhados dá a
+                # escala real de brilho e saturação DESTA imagem. Sem isso, o
+                # mesmo classificador que acerta em Goiás às 9h erra no
+                # Paraná às 15h e devolve "Indeterminado" (medido: 23%).
+                from app.core.roof_analyzer import build_flight_calibration
+                calibration = {"val_shift": 0.0, "sat_scale": 1.0, "samples": 0}
+
+                shadows = analyzed = errors = ground = 0
+                classified = unclassifiable = coherent_count = 0
+                by_type: dict[str, int] = {}
+                by_material: dict[str, int] = {}
+                gains: list[float] = []
+                batch = 0
+
+                with _rio.open(assets["orthomosaic"]) as ortho, _rio.open(assets["dsm"]) as dsm:
+                    gsd = float(abs(dsm.transform.a))
+
+                    def _windows(geo_json):
+                        gd = _tg("EPSG:4326", dsm.crs.to_string(), geo_json)
+                        go = _tg("EPSG:4326", ortho.crs.to_string(), geo_json)
+                        hw, _a = _rio_mask(dsm, [gd], crop=True, filled=True, nodata=0)
+                        rw, _b = _rio_mask(ortho, [go], crop=True, filled=True, nodata=0)
+                        hh_ = hw[0].astype("float32")
+                        rgb_ = rw[:3].astype("float32")
+                        a_ = min(hh_.shape[0], rgb_.shape[1])
+                        b_ = min(hh_.shape[1], rgb_.shape[2])
+                        hh_, rgb_ = hh_[:a_, :b_], rgb_[:, :a_, :b_]
+                        mk_ = hh_ > 0.05
+                        if mk_.sum() < 8:
+                            mk_ = _np.ones_like(hh_, dtype=bool)
+                        return rgb_, hh_, mk_
+
+                    # Amostra de calibração: até 40 telhados de porte, os que
+                    # melhor representam a iluminação real do levantamento.
+                    samples = []
+                    for det_id, geo in rows[: min(len(rows), 60)]:
+                        try:
+                            rgb_s, h_s, m_s = _windows(_json.loads(geo))
+                            probe = analyze_roof(rgb_s, h_s, m_s, gsd)
+                            if probe.get("roof_valid") and probe.get("material_metrics"):
+                                samples.append(probe["material_metrics"])
+                            if len(samples) >= 40:
+                                break
+                        except Exception:
+                            continue
+                    calibration = build_flight_calibration(samples)
+                    logger.info(f"[ROOF] calibração do voo: {calibration}")
+
+                    for det_id, geo in rows:
+                        try:
+                            g = _json.loads(geo)
+                            gd = _tg("EPSG:4326", dsm.crs.to_string(), g)
+                            go = _tg("EPSG:4326", ortho.crs.to_string(), g)
+                            hwin, _t1 = _rio_mask(dsm, [gd], crop=True, filled=True, nodata=0)
+                            rwin, _t2 = _rio_mask(ortho, [go], crop=True, filled=True, nodata=0)
+                            h = hwin[0].astype("float32")
+                            rgb = rwin[:3].astype("float32")
+                            # Os recortes vêm de rasters distintos: alinhar
+                            # pelo menor evita erro de 1 px virar exceção.
+                            hh = min(h.shape[0], rgb.shape[1])
+                            ww = min(h.shape[1], rgb.shape[2])
+                            h, rgb = h[:hh, :ww], rgb[:, :hh, :ww]
+                            m = h > 0.05
+                            if m.sum() < 8:
+                                m = _np.ones_like(h, dtype=bool)
+                            res = analyze_roof(rgb, h, m, gsd, calibration=calibration)
+                        except Exception as e:
+                            errors += 1
+                            if errors <= 3:
+                                logger.warning(f"[ROOF] detecção {det_id}: {e}")
+                            continue
+
+                        if not res.get("roof_valid"):
+                            is_shadow = res.get("rejected_as") == "shadow"
+                            shadows += 1 if is_shadow else 0
+                            ground += 0 if is_shadow else 1
+                            conn.execute(_sa(
+                                "UPDATE ai_detections SET shadow_rejected = :sh, "
+                                "luminance = :lum, roof_analysis = CAST(:ra AS jsonb) "
+                                "WHERE id = CAST(:id AS uuid)"
+                            ), {"sh": is_shadow, "lum": res.get("luminance"),
+                                "ra": _json.dumps(res), "id": str(det_id)})
+                        else:
+                            analyzed += 1
+                            if res.get("classifiable") is False or res.get("type_indeterminate"):
+                                unclassifiable += 1
+                            else:
+                                classified += 1
+                                if res.get("spec_coherent"):
+                                    coherent_count += 1
+                            by_type[res["roof_type"]] = by_type.get(res["roof_type"], 0) + 1
+                            by_material[res["roof_material"]] = by_material.get(res["roof_material"], 0) + 1
+                            gains.append(res["area_gain_pct"])
+                            conn.execute(_sa(
+                                "UPDATE ai_detections SET "
+                                "roof_type = :rt, roof_design = :rd, roof_waters = :rw, "
+                                "roof_type_confidence = :rtc, roof_material = :rm, "
+                                "roof_material_confidence = :rmc, roof_slope_pct = :sp, "
+                                "roof_slope_deg = :sd, area_projected_sqm = :ap, "
+                                "area_real_sqm = :ar, area_gain_pct = :ag, luminance = :lum, "
+                                "shadow_rejected = FALSE, roof_analysis = CAST(:ra AS jsonb) "
+                                "WHERE id = CAST(:id AS uuid)"
+                            ), {
+                                "rt": res["roof_type"], "rd": res["roof_design"],
+                                "rw": res["roof_waters"], "rtc": res["roof_type_confidence"],
+                                "rm": res["roof_material"], "rmc": res["roof_material_confidence"],
+                                "sp": res["slope_pct"], "sd": res["slope_deg"],
+                                "ap": res["area_projected_m2"], "ar": res["area_real_m2"],
+                                "ag": res["area_gain_pct"], "lum": res.get("luminance"),
+                                "ra": _json.dumps(res), "id": str(det_id),
+                            })
+                        batch += 1
+                        if batch % 25 == 0:
+                            conn.commit()
+                conn.commit()
+
+                summary = {
+                    "status": "completed",
+                    "flight_id": flight_id,
+                    "total": len(rows),
+                    "roofs_analyzed": analyzed,
+                    "shadows_rejected": shadows,
+                    "ground_level_rejected": ground,
+                    "errors": errors,
+                    "by_type": by_type,
+                    "by_material": by_material,
+                    "avg_area_gain_pct": round(float(_np.mean(gains)), 2) if gains else 0.0,
+                    "calibration": calibration,
+                    # A régua que interessa: dos telhados que RECEBERAM tipo,
+                    # quantos têm inclinação coerente com a faixa normativa.
+                    "typed_roofs": classified,
+                    "unclassifiable": unclassifiable,
+                    "spec_coherent": coherent_count,
+                    "spec_coherence_pct": (
+                        round(100.0 * coherent_count / classified, 1) if classified else 0.0
+                    ),
+                }
+                logger.info(f"[ROOF] {summary}")
+                return summary
+        finally:
+            eng.dispose()
+    finally:
+        _shutil.rmtree(work, ignore_errors=True)
+
+
+@shared_task(
     name="app.tasks.post_processing.audit_detection_coverage",
     bind=True,
     max_retries=0,
@@ -1082,6 +1288,12 @@ def validate_detections_elevation(
                         countdown=5,
                     )
                     logger.info(f"[VALIDATE] {summary['weak']} weak enviadas à adjudicação nativa")
+                # Telhados são analisados SEMPRE: sombra precisa sair do mapa
+                # mesmo quando não há dúvida a adjudicar.
+                analyze_roofs.apply_async(
+                    kwargs={"flight_id": flight_id, "tenant_schema": tenant_schema},
+                    countdown=10,
+                )
                 return summary
         finally:
             eng.dispose()
