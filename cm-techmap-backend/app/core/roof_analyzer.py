@@ -48,28 +48,75 @@ def _luminance(rgb: np.ndarray) -> np.ndarray:
     return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255.0
 
 
-def detect_shadow(rgb_win: np.ndarray, height_win: np.ndarray, mask: np.ndarray) -> dict:
+def shadow_pixel_mask(rgb_win: np.ndarray, height_win: np.ndarray, gsd_m: float) -> np.ndarray:
     """
-    Diz se a região é SOMBRA em vez de telhado — e por quê.
+    Máscara PIXEL A PIXEL do que é sombra ou vegetação sombreada.
 
-    Sombra: escura E rasteira. Telhado escuro (cerâmica queimada, metálico
-    fosco) tem altura e passa; piso claro tem luminância alta e passa.
-    Só a combinação escuro+rasteiro é rejeitada.
+    Três assinaturas físicas, cada uma insuficiente sozinha:
+    - CROMÁTICA: sombra é iluminada pelo céu, não pelo sol — escura E
+      azulada (B domina). Telha escura reflete o sol e não puxa pro azul.
+    - VEGETAÇÃO SOMBREADA: escura E rugosa no nDSM. Copa na sombra herda a
+      ALTURA da árvore e furava o teste antigo (medido no relato do campo:
+      'sombra' com h=12,7 m — era copa). Telhado é liso; copa nunca é.
+    - RASTEIRA: escura e sem elevação (a sombra clássica no chão).
+    """
+    import cv2
+
+    lum = _luminance(rgb_win)
+    total = np.maximum(rgb_win.sum(axis=0), 1e-6)
+    blue_ratio = rgb_win[2] / total
+    dark = lum < SHADOW_LUMINANCE_MAX
+    bluish = blue_ratio > 0.345
+
+    k = max(3, int(round(0.5 / max(gsd_m, 1e-6))) | 1)
+    mu = cv2.blur(height_win.astype(np.float32), (k, k))
+    sq = cv2.blur((height_win * height_win).astype(np.float32), (k, k))
+    rough = np.sqrt(np.maximum(sq - mu * mu, 0.0))
+
+    low = height_win < SHADOW_HEIGHT_MAX
+    shadowed_canopy = dark & (rough > 1.0)
+    chromatic = dark & bluish
+    ground_shadow = dark & low
+    return ground_shadow | chromatic | shadowed_canopy
+
+
+def detect_shadow(
+    rgb_win: np.ndarray,
+    height_win: np.ndarray,
+    mask: np.ndarray,
+    gsd_m: float = 0.05,
+) -> dict:
+    """
+    Julga a detecção inteira E devolve a máscara de telhado APARADA.
+
+    O caso que o teste antigo perdia: polígono que mistura telhado com a
+    saia de sombra ao lado (ou copa sombreada). A decisão vira fração:
+    - maioria sombra → rejeita a detecção inteira;
+    - minoria sombra → APARA: a medição passa a valer só nos pixels de
+      telhado, como uma pessoa contornando a beirada com o dedo.
     """
     if not mask.any():
         return {"is_shadow": False, "reason": "sem pixels"}
     lum = float(_luminance(rgb_win)[mask].mean())
-    h_mean = float(height_win[mask].mean())
     h_p90 = float(np.percentile(height_win[mask], 90))
-    is_shadow = lum < SHADOW_LUMINANCE_MAX and h_p90 < SHADOW_HEIGHT_MAX
+
+    shadow_px = shadow_pixel_mask(rgb_win, height_win, gsd_m)
+    shadow_frac = float((shadow_px & mask).sum()) / float(mask.sum())
+    valid = mask & ~shadow_px
+
+    is_shadow = shadow_frac >= 0.60 or (lum < SHADOW_LUMINANCE_MAX and h_p90 < SHADOW_HEIGHT_MAX)
     return {
         "is_shadow": is_shadow,
         "luminance": round(lum, 4),
-        "height_mean_m": round(h_mean, 3),
         "height_p90_m": round(h_p90, 3),
+        "shadow_fraction": round(shadow_frac, 3),
+        "valid_mask": valid,
+        "trimmed": bool(0.05 < shadow_frac < 0.60),
         "reason": (
-            f"escura (luminância {lum:.2f}) e rasteira (p90 {h_p90:.2f} m) — sombra"
+            f"{shadow_frac*100:.0f}% dos pixels são sombra/vegetação sombreada"
             if is_shadow else
+            f"telhado com {shadow_frac*100:.0f}% de saia de sombra aparada"
+            if shadow_frac > 0.05 else
             f"luminância {lum:.2f}, altura p90 {h_p90:.2f} m — superfície real"
         ),
     }
@@ -543,13 +590,20 @@ def analyze_roof(
     if not mask.any():
         return {"roof_valid": False, "reason": "máscara vazia"}
 
-    shadow = detect_shadow(rgb_win, height_win, mask)
+    shadow = detect_shadow(rgb_win, height_win, mask, gsd_m)
+    valid_mask = shadow.pop("valid_mask", mask)
     out.update({
-        "shadow_check": shadow,
+        "shadow_check": {k: v for k, v in shadow.items() if k != "valid_mask"},
         "luminance": shadow.get("luminance"),
+        "shadow_fraction": shadow.get("shadow_fraction"),
+        "boundary_trimmed": shadow.get("trimmed", False),
     })
     if shadow["is_shadow"]:
         return {**out, "roof_valid": False, "rejected_as": "shadow", "reason": shadow["reason"]}
+    # Daqui em diante, TODA medição vale só nos pixels de telhado — a saia
+    # de sombra ao lado não entra na área, na altura nem no material.
+    if valid_mask.sum() >= 12:
+        mask = valid_mask
 
     h = height_win[mask]
     if float(np.percentile(h, 90)) < ROOF_MIN_HEIGHT_M:

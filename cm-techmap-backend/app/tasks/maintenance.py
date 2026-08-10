@@ -277,3 +277,50 @@ def requeue_stuck_reports(max_age_minutes: int = 10) -> dict:
     if requeued:
         logger.info(f"[MAINT] {requeued} relatório(s) órfão(s) redespachado(s) de {checked}")
     return {"checked": checked, "requeued": requeued}
+
+@celery_app.task(name="app.tasks.maintenance.reanalyze_stale_detections")
+def reanalyze_stale_detections(max_flights: int = 1) -> dict:
+    """
+    AUTO-REPROCESSAMENTO após atualização do sistema.
+
+    O instalador atualiza o CÓDIGO, mas os dados já processados ficam como
+    estavam — foi assim que uma máquina atualizada continuou exibindo
+    sombras como imóveis: as detecções eram da geração anterior e a análise
+    de telhados nunca tinha rodado nelas.
+
+    Este vigia (beat, a cada 15 min) encontra voos cujas detecções ativas
+    não têm roof_analysis e dispara a cadeia completa (validação 3D →
+    adjudicação → telhados) para UM voo por vez — a máquina se corrige
+    sozinha depois de atualizar, sem ninguém precisar reprocessar à mão.
+    """
+    from sqlalchemy import create_engine, text as sa_text
+
+    settings = get_settings()
+    engine = create_engine(settings.database_url_sync)
+    dispatched = []
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(sa_text(
+                "SELECT fa.flight_id, count(*) AS pend "
+                "FROM ai_detections d "
+                "JOIN flight_assets fa ON d.flight_asset_id = fa.id "
+                "WHERE fa.is_active AND d.polygon IS NOT NULL "
+                "AND d.roof_analysis IS NULL "
+                "GROUP BY fa.flight_id ORDER BY pend DESC LIMIT :n"
+            ), {"n": max_flights}).fetchall()
+        from app.tasks.post_processing import validate_detections_elevation
+        for flight_id, pend in rows:
+            validate_detections_elevation.apply_async(
+                kwargs={"flight_id": str(flight_id), "tenant_schema": None}
+            )
+            dispatched.append({"flight_id": str(flight_id), "pending": int(pend)})
+            logger.info(
+                f"[MAINT] voo {flight_id}: {pend} detecção(ões) sem análise de "
+                f"telhado — reprocessamento automático disparado"
+            )
+    except Exception as e:
+        logger.warning(f"[MAINT] reanalyze_stale_detections: {e}")
+    finally:
+        engine.dispose()
+    return {"dispatched": dispatched}
+

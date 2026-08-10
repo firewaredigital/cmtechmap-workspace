@@ -77,6 +77,13 @@ celery_app.conf.update(include=[
 from celery.schedules import crontab
 
 celery_app.conf.beat_schedule = {
+    "reanalyze-stale-detections": {
+        "task": "app.tasks.maintenance.reanalyze_stale_detections",
+        # A cada 15 min: máquina atualizada corrige os dados antigos sozinha
+        # (sombras da geração anterior saem do mapa sem ação manual).
+        "schedule": crontab(minute="*/15"),
+        "options": {"queue": "default"},
+    },
     "requeue-stuck-reports": {
         "task": "app.tasks.maintenance.requeue_stuck_reports",
         # A cada 5 min: uma atualização do sistema não pode deixar relatório
