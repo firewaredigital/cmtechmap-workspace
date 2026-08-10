@@ -770,7 +770,7 @@ def analyze_roofs(self, flight_id: str, tenant_schema: str | None = None):
                     "SELECT d.id, ST_AsGeoJSON(d.polygon) FROM ai_detections d "
                     "JOIN flight_assets fa ON d.flight_asset_id = fa.id "
                     "WHERE fa.flight_id = CAST(:fid AS uuid) AND fa.is_active "
-                    "AND d.polygon IS NOT NULL"
+                    "AND d.polygon IS NOT NULL ORDER BY d.id"
                 ), {"fid": flight_id}).fetchall()
                 if not rows:
                     return {"status": "no_detections"}

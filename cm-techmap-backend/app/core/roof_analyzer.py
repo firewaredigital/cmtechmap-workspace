@@ -663,7 +663,14 @@ def analyze_roof(
         plane = {**plane, "source": "pixel_gradient"}
     slope_p90 = float(np.percentile(np.clip(slope_pct[interior], 0, 300), 90))
     roof_name, design, struct_conf = _classify_structure(waters, slope_mean, directions)
-    _m_legacy, _d_legacy, _c_legacy, mat_metrics = _classify_material(rgb_win, mask)
+    # Material medido SÓ no telhado ensolarado: pixels de sombra/penumbra
+    # mudam de amostragem a cada aparo e faziam a classificação oscilar
+    # (Cerâmica 65→15 entre duas execuções — inaceitável para laudo). A luz
+    # do sol é a única iluminação estável entre execuções e entre voos.
+    sunlit = mask & (_luminance(rgb_win) >= 0.40)
+    material_basis = sunlit if sunlit.sum() >= max(12, int(0.10 * mask.sum())) else mask
+    _m_legacy, _d_legacy, _c_legacy, mat_metrics = _classify_material(rgb_win, material_basis)
+    mat_metrics["sunlit_fraction"] = round(float(sunlit.sum()) / float(mask.sum()), 3)
     # Classificação por PROXIMIDADE às assinaturas, com a escala do voo
     # corrigida — é o que faz o mesmo classificador servir a municípios com
     # câmeras, horários e latitudes diferentes.
@@ -715,6 +722,54 @@ def analyze_roof(
         "roof_levels": n_levels,
         "multi_level": n_levels > 1,
     })
+
+    # ÁREA DE PISO — a grandeza que a MEDIÇÃO MANUAL entrega. O telhado
+    # ultrapassa a parede pelo beiral (NBR: 0,5–0,8 m típicos no Brasil).
+    # piso ≈ projetada − perímetro×beiral + 4×beiral² (cantos descontados
+    # duas vezes). A incerteza declarada cobre a faixa real de beirais:
+    # o valor verdadeiro fica DENTRO do intervalo publicado.
+    px_lin = math.sqrt(px_area)
+    ys_m, xs_m = np.nonzero(mask)
+    if ys_m.size:
+        import cv2 as _cv2f
+        # Perímetro da SILHUETA EXTERNA — como um medidor contorna a casa.
+        # O gradiente morfológico contava também as bordas INTERNAS dos
+        # recortes do aparo de sombra e dobrava o perímetro (medido: piso de
+        # 2,6 m² para telhado de 34 m², absurdo). Fechar os buracos e seguir
+        # só o contorno de fora devolve o perímetro que existe no mundo.
+        closed = _cv2f.morphologyEx(
+            mask.astype(np.uint8), _cv2f.MORPH_CLOSE, np.ones((7, 7), np.uint8)
+        )
+        contours, _h = _cv2f.findContours(closed, _cv2f.RETR_EXTERNAL, _cv2f.CHAIN_APPROX_SIMPLE)
+        if contours:
+            biggest = max(contours, key=_cv2f.contourArea)
+            # 0.92: o contorno em escada de pixels supera a reta em ~8%
+            perimeter_m = float(_cv2f.arcLength(biggest, True)) * px_lin * 0.92
+        else:
+            perimeter_m = 4.0 * math.sqrt(max(area_projected, 1e-6))
+        eave, eave_lo, eave_hi = 0.60, 0.40, 0.80
+        def _floor(e):
+            return max(0.0, area_projected - perimeter_m * e + 4 * e * e)
+        floor_est = _floor(eave)
+        # Sanidade física: beiral não engole a casa. Se o desconto passar de
+        # 70% da projeção, o polígono é estreito/fragmentado demais para a
+        # fórmula — publica-se o piso mínimo plausível com a ressalva.
+        floor_min_plausible = 0.30 * area_projected
+        floor_clamped = floor_est < floor_min_plausible
+        if floor_clamped:
+            floor_est = floor_min_plausible
+        out.update({
+            "floor_area_est_m2": round(floor_est, 2),
+            "floor_area_range_m2": [round(_floor(eave_hi), 2), round(_floor(eave_lo), 2)],
+            "eave_assumed_m": eave,
+            "perimeter_m": round(perimeter_m, 2),
+            "floor_area_clamped": floor_clamped,
+            "floor_area_note": (
+                "Área de piso estimada = projeção do telhado − beiral de "
+                f"{eave} m no perímetro; faixa cobre beirais de {eave_lo} a {eave_hi} m. "
+                "É a grandeza comparável à medição manual de paredes."
+            ),
+        })
 
     # ── PORTÃO DE QUALIDADE ─────────────────────────────────────────────
     # Só recebe TIPO de telhado o que se comporta como telhado. Afirmar
