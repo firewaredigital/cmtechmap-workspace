@@ -285,6 +285,12 @@ def _normalize_terrain_tile(
     r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
     elevation = (r * 256.0 + g + b / 256.0) - 32768.0
 
+    # NODATA vira ABISMO: o TiTiler codifica pixel mascarado como RGB(0,0,0)
+    # = −32768 m. O MapLibre interpola do abismo ao terreno normal e a malha
+    # explode num cone gigante sobre a cidade (provado decodificando os
+    # tiles servidos: min −32768, máx 18,5). Nodata é CHÃO, não poço.
+    elevation = np.where(elevation < -100.0, 0.0, elevation)
+
     # Subtract base elevation → relative heights
     elevation = np.clip(elevation - base_elevation, 0.0, max_relative_elev)
 
@@ -439,8 +445,10 @@ async def get_terrain_tile(
                 },
             )
             if resp.status_code == 200:
-                # Normalize the tile: subtract base elevation + apply source-specific processing
-                if base_elevation > 10.0 or dsm_source == "synthetic":
+                # SEMPRE normalizar: o atalho "base 0 → tile cru" deixava o
+                # nDSM real passar com nodata = −32768 m — o abismo que o
+                # MapLibre esticava num cone gigante sobre a cidade.
+                if True:
                     try:
                         # Decode/filter/re-encode is pure CPU work. Panning the
                         # map fires hundreds of tile requests; doing this inline
